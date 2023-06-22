@@ -7,6 +7,10 @@ import h5py
 import torch
 from numpy.linalg import inv
 import math
+from numpy.random import normal
+from numpy.random import uniform
+from scipy.stats import truncnorm
+from math import pi
 
 from .rgbd_util import *
 
@@ -141,7 +145,7 @@ def read_megadepth_depth(path, pad_to=None):
 
 # --- ScanNet ---
 
-def read_scannet_gray(path, resize=(640, 480), augment_fn=None):
+def read_scannet_gray(path, resize=(640, 480), augment_fn=None, homo=False):
     """
     Args:
         resize (tuple): align image to depthmap, in (w, h).
@@ -156,8 +160,47 @@ def read_scannet_gray(path, resize=(640, 480), augment_fn=None):
     image = cv2.resize(image, resize)
 
     # (h, w) -> (1, h, w) and normalized
-    image = torch.from_numpy(image).float()[None] / 255
-    return image
+    if homo:
+        return image
+    else:
+        return torch.from_numpy(image).float()[None] / 255
+
+def read_c3vd_gray(path, resize=None, augment_fn=None, with_mask=True, homo=False):
+    """
+    Args:
+        resize (tuple): align image to depthmap, in (w, h).
+        augment_fn (callable, optional): augments images with pre-defined visual effects
+    Returns:
+        image (torch.tensor): (1, h, w)
+        mask (torch.tensor): (h, w)
+        scale (torch.tensor): [w/w_new, h/h_new]        
+    """
+    # read and resize image
+    image = imread_gray(path, augment_fn)
+    if resize:
+        image = cv2.resize(image, resize)
+    if with_mask:
+        # Set a darkness threshold
+        darkness_threshold = 5
+
+        # Create a mask by thresholding the grayscale image
+        mask = np.where(image < darkness_threshold, 255, 0).astype(np.uint8)
+
+        # Perform morphological closing to fill small holes in the mask
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        closed_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        closed_mask = cv2.GaussianBlur(closed_mask, (13, 13), 0)
+
+        if not homo:
+            closed_mask = closed_mask==0
+    else:
+        closed_mask = None
+
+    # (h, w) -> (1, h, w) and normalized
+    if homo:
+        return image, closed_mask
+    else:
+        return torch.from_numpy(image).float()[None] / 255, torch.from_numpy(closed_mask)
 
 
 def read_scannet_depth(path,K,cross_modal=False):
@@ -177,6 +220,34 @@ def read_scannet_depth(path,K,cross_modal=False):
             cv2.imwrite(str(path).replace("depth","hha"), hha)
             # (h, w)
         hha = torch.from_numpy(hha).float().permute(2, 0, 1)/255
+    else: 
+        hha = None
+    return depth, hha
+
+def read_c3vd_depth(path, K ,cross_modal=False, resize=(640, 480)):
+    if str(path).startswith('s3://'):
+        depth = load_array_from_s3(str(path), SCANNET_CLIENT, cv2.IMREAD_UNCHANGED)
+    else:
+        depth = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    
+    depth = depth / 1000
+    if resize:
+        depth = cv2.resize(depth, resize)
+    depth = torch.from_numpy(depth).float()
+    
+    if cross_modal:
+        # hha = cv2.imread(str(path).replace("depth","hha"), cv2.IMREAD_UNCHANGED)
+        # if hha is None:
+        #     K = np.reshape(K, (3,3))
+        #     hha = getHHA(K, depth, depth)
+        #     cv2.imwrite(str(path).replace("depth","hha"), hha)
+        #     # (h, w)
+        # hha = torch.from_numpy(hha).float().permute(2, 0, 1)/255
+        
+        hha = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if resize:
+            hha = cv2.resize(hha, resize)
+        hha = torch.from_numpy(hha).float()[None] / 255
     else: 
         hha = None
     return depth, hha
@@ -231,14 +302,14 @@ def read_scannet_pose(path):
     return world2cam
 
 def read_c3vd_pose(path, name):
-    """ Read ScanNet's Camera2World pose and transform it to World2Camera.
+    """ Read C3VD's Camera2World pose and transform it to World2Camera.
     
     Returns:
         pose_w2c (np.ndarray): (4, 4)
     """
-    cam2world = np.loadtxt(path, delimiter=',')[int(name)]
-    cam2world = cam2world.reshape((4, 4))
-    world2cam = inv(cam2world)
+    with open(path, 'r') as f:
+        raw = f.readlines()
+    world2cam = inv(np.fromstring(raw[int(name)], dtype=float, sep=",").reshape((4,4)))
     return world2cam
 
 
@@ -247,3 +318,131 @@ def read_scannet_intrinsic(path):
     """
     intrinsic = np.loadtxt(path, delimiter=' ')
     return intrinsic[:-1, :-1]
+
+def sample_homography_np(
+        shape, shift=0, perspective=True, scaling=True, rotation=True, translation=True,
+        n_scales=5, n_angles=25, scaling_amplitude=0.1, perspective_amplitude_x=0.1,
+        perspective_amplitude_y=0.1, patch_ratio=0.5, max_angle=pi/2,
+        allow_artifacts=False, translation_overflow=0.):
+    """Sample a random valid homography.
+
+    Computes the homography transformation between a random patch in the original image
+    and a warped projection with the same image size.
+    As in `tf.contrib.image.transform`, it maps the output point (warped patch) to a
+    transformed input point (original patch).
+    The original patch, which is initialized with a simple half-size centered crop, is
+    iteratively projected, scaled, rotated and translated.
+
+    Arguments:
+        shape: A rank-2 `Tensor` specifying the height and width of the original image.
+        perspective: A boolean that enables the perspective and affine transformations.
+        scaling: A boolean that enables the random scaling of the patch.
+        rotation: A boolean that enables the random rotation of the patch.
+        translation: A boolean that enables the random translation of the patch.
+        n_scales: The number of tentative scales that are sampled when scaling.
+        n_angles: The number of tentatives angles that are sampled when rotating.
+        scaling_amplitude: Controls the amount of scale.
+        perspective_amplitude_x: Controls the perspective effect in x direction.
+        perspective_amplitude_y: Controls the perspective effect in y direction.
+        patch_ratio: Controls the size of the patches used to create the homography.
+        max_angle: Maximum angle used in rotations.
+        allow_artifacts: A boolean that enables artifacts when applying the homography.
+        translation_overflow: Amount of border artifacts caused by translation.
+
+    Returns:
+        A `Tensor` of shape `[1, 8]` corresponding to the flattened homography transform.
+    """
+
+    # print("debugging")
+
+
+    # Corners of the output image
+    pts1 = np.stack([[0., 0.], [0., 1.], [1., 1.], [1., 0.]], axis=0)
+    # Corners of the input patch
+    margin = (1 - patch_ratio) / 2
+    pts2 = margin + np.array([[0, 0], [0, patch_ratio],
+                                 [patch_ratio, patch_ratio], [patch_ratio, 0]])
+
+    # Random perspective and affine perturbations
+    # lower, upper = 0, 2
+    std_trunc = 2
+
+    if perspective:
+        if not allow_artifacts:
+            perspective_amplitude_x = min(perspective_amplitude_x, margin)
+            perspective_amplitude_y = min(perspective_amplitude_y, margin)
+        # perspective_displacement = tf.truncated_normal([1], 0., perspective_amplitude_y/2)
+        # perspective_displacement = normal(0., perspective_amplitude_y/2, 1)
+        perspective_displacement = truncnorm(-1*std_trunc, std_trunc, loc=0, scale=perspective_amplitude_y/2).rvs(1)
+        # h_displacement_left = normal(0., perspective_amplitude_x/2, 1)
+        h_displacement_left = truncnorm(-1*std_trunc, std_trunc, loc=0, scale=perspective_amplitude_x/2).rvs(1)
+        # h_displacement_right = normal(0., perspective_amplitude_x/2, 1)
+        h_displacement_right = truncnorm(-1*std_trunc, std_trunc, loc=0, scale=perspective_amplitude_x/2).rvs(1)
+        pts2 += np.array([[h_displacement_left, perspective_displacement],
+                          [h_displacement_left, -perspective_displacement],
+                          [h_displacement_right, perspective_displacement],
+                          [h_displacement_right, -perspective_displacement]]).squeeze()
+
+    # Random scaling
+    # sample several scales, check collision with borders, randomly pick a valid one
+    if scaling:
+        scales = truncnorm(-1*std_trunc, std_trunc, loc=1, scale=scaling_amplitude/2).rvs(n_scales)
+        scales = np.concatenate((np.array([1]), scales), axis=0)
+
+        # scales = np.concatenate( (np.ones((n_scales,1)), scales[:,np.newaxis]), axis=1)
+        center = np.mean(pts2, axis=0, keepdims=True)
+        scaled = (pts2 - center)[np.newaxis, :, :] * scales[:, np.newaxis, np.newaxis] + center
+        if allow_artifacts:
+            valid = np.arange(n_scales)  # all scales are valid except scale=1
+        else:
+            # valid = np.where((scaled >= 0.) * (scaled < 1.))
+            valid = (scaled >= 0.) * (scaled < 1.)
+            valid = valid.prod(axis=1).prod(axis=1)
+            valid = np.where(valid)[0]
+        idx = valid[np.random.randint(valid.shape[0], size=1)].squeeze().astype(int)
+        pts2 = scaled[idx,:,:]
+
+    # Random translation
+    if translation:
+        t_min, t_max = np.min(pts2, axis=0), np.min(1 - pts2, axis=0)
+        if allow_artifacts:
+            t_min += translation_overflow
+            t_max += translation_overflow
+        pts2 += np.array([uniform(-t_min[0], t_max[0],1), uniform(-t_min[1], t_max[1], 1)]).T
+
+    # Random rotation
+    # sample several rotations, check collision with borders, randomly pick a valid one
+    if rotation:
+        angles = np.linspace(-max_angle, max_angle, num=n_angles)
+        angles = np.concatenate((angles, np.array([0.])), axis=0)  # in case no rotation is valid
+        center = np.mean(pts2, axis=0, keepdims=True)
+        rot_mat = np.reshape(np.stack([np.cos(angles), -np.sin(angles), np.sin(angles),
+                                       np.cos(angles)], axis=1), [-1, 2, 2])
+        rotated = np.matmul( (pts2 - center)[np.newaxis,:,:], rot_mat) + center
+        if allow_artifacts:
+            valid = np.arange(n_angles)  # all scales are valid except scale=1
+        else:
+            valid = (rotated >= 0.) * (rotated < 1.)
+            valid = valid.prod(axis=1).prod(axis=1)
+            valid = np.where(valid)[0]
+        idx = valid[np.random.randint(valid.shape[0], size=1)].squeeze().astype(int)
+        pts2 = rotated[idx,:,:]
+        # idx = valid[tf.random_uniform((), maxval=tf.shape(valid)[0], dtype=tf.int32)]
+        # pts2 = rotated[idx]
+
+    # Rescale to actual size
+    shape = shape[::-1]  # different convention [y, x]反转
+    pts1 *= shape[np.newaxis,:]
+    pts2 *= shape[np.newaxis,:]
+
+    def ax(p, q): return [p[0], p[1], 1, 0, 0, 0, -p[0] * q[0], -p[1] * q[0]]
+
+    def ay(p, q): return [0, 0, 0, p[0], p[1], 1, -p[0] * q[1], -p[1] * q[1]]
+
+    # a_mat = tf.stack([f(pts1[i], pts2[i]) for i in range(4) for f in (ax, ay)], axis=0)
+    # p_mat = tf.transpose(tf.stack(
+    #     [[pts2[i][j] for i in range(4) for j in range(2)]], axis=0))
+    # homography = tf.transpose(tf.matrix_solve_ls(a_mat, p_mat, fast=True))
+   #  pts1*= pts1*shape
+    homography = cv2.getPerspectiveTransform(np.float32(pts1+shift), np.float32(pts2+shift))
+    return homography

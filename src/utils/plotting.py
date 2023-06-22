@@ -2,6 +2,8 @@ import bisect
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
+import cv2
+import torch
 
 
 def _compute_conf_thresh(data):
@@ -152,3 +154,89 @@ def error_colormap(err, thr, alpha=1.0):
     x = 1 - np.clip(err / (thr * 2), 0, 1)
     return np.clip(
         np.stack([2-x*2, x*2, np.zeros_like(x), np.ones_like(x)*alpha], -1), 0, 1)
+
+def make_supervision_figures(data):
+    """ Make supervision figures for a batch.
+    
+    Args:
+        data (Dict): a batch updated by PL_LoFTR.
+    Returns:
+        figures (Dict[str, List[plt.figure]]
+    """
+    figures = {'spv_c': [], 'spv_f':[]}
+    for b_id in range(data['image0'].size(0)):
+        fig_c, fig_f = _make_spv_figure(data,b_id)
+        figures['spv_c'].append(fig_c)
+        figures['spv_f'].append(fig_f)
+
+    return figures
+
+def _make_spv_figure(data, b_id):
+
+    b_mask = data['spv_b_ids'] == b_id
+    m_b_mask = data['m_bids'] == b_id
+    
+    img0 = (data['image0'][b_id][0].cpu().numpy() * 255).round().astype(np.uint8)
+    img1 = (data['image1'][b_id][0].cpu().numpy() * 255).round().astype(np.uint8)
+
+    img0 = cv2.cvtColor(img0, cv2.COLOR_GRAY2RGB)    
+    img1 = cv2.cvtColor(img1, cv2.COLOR_GRAY2RGB)  
+
+    kpts0 = data['spv_pt0_i'][b_id].cpu().numpy()
+    kpts1 = data['spv_pt1_i'][b_id].cpu().numpy()
+    w_kpts0 = data['spv_w_pt0_i'][b_id].cpu().numpy()
+    
+    m_kpts0_c = data['mkpts0_c'][m_b_mask].cpu().numpy()
+    m_kpts1_c = data['mkpts1_c'][m_b_mask].cpu().numpy()
+    m_kpts0_f = data['mkpts0_f'][m_b_mask].cpu().numpy()
+    m_kpts1_f = data['mkpts1_f'][m_b_mask].cpu().numpy()
+
+    # nearest_index1 = data['spv_nearest_index1'][b_id].cpu().numpy()
+    # nearest_index0 = data['spv_nearest_index0'][b_id].cpu().numpy()
+    
+
+    # make the figure
+    i_ids = data['spv_i_ids'][b_mask].cpu().numpy()
+    j_ids = data['spv_j_ids'][b_mask].cpu().numpy()
+
+    b_mask = data['b_ids'] == b_id
+    i_ids_f = data['i_ids'][b_mask].cpu().numpy()
+    j_ids_f = data['j_ids'][b_mask].cpu().numpy()
+    
+    # spv_c
+    img0_c = img0.copy()
+    for pts in kpts0[i_ids]:
+        cv2.circle(img0_c, tuple([int(x) for x in pts]), 2, (0,255,0), -1)
+    for pts in m_kpts0_c:
+        cv2.circle(img0_c, tuple([int(x) for x in pts]), 1, (255,0,0), -1)
+    
+    
+    img1_c = img1.copy()
+    for pts in kpts1[j_ids]:
+        cv2.circle(img1_c, tuple([int(x) for x in pts]), 2, (0,255,0), -1)
+    
+    for pts in m_kpts1_c:
+        cv2.circle(img1_c, tuple([int(x) for x in pts]), 1, (255,0,0), -1)
+
+    # spv_f
+    img0_f = img0.copy()
+    for pts in kpts0[i_ids_f]:
+        cv2.circle(img0_f, tuple([int(x) for x in pts]), 2, (0,255,0), -1)
+    
+    for pts in m_kpts0_f:
+        cv2.circle(img0_f, tuple([int(x) for x in pts]), 4, (0,0,255))
+
+    img1_f = img1.copy()
+    for pts in kpts1[j_ids_f]:
+        cv2.circle(img1_f, tuple([int(x) for x in pts]), 2, (0,255,0), -1)
+    
+    for pts in w_kpts0[i_ids_f]:
+        cv2.circle(img1_f, tuple([int(x) for x in pts]), 1, (255,0,0), -1)
+    
+    for pts in m_kpts1_f:
+        cv2.circle(img1_f, tuple([int(x) for x in pts]), 4, (0,0,255))
+
+
+    out_c = np.concatenate([img0_c,img1_c],axis=1)
+    out_f = np.concatenate([img0_f,img1_f],axis=1)
+    return out_c, out_f

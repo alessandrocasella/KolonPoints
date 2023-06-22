@@ -49,6 +49,9 @@ def parse_args():
     parser.add_argument(
         '--parallel_load_data', action='store_true',
         help='load datasets in with multiple processes.')
+    parser.add_argument(
+        '--mixed_precision', action='store_true',
+        help='whether to use automatic mixed precision.')
 
     parser = pl.Trainer.add_argparse_args(parser)
     return parser.parse_args()
@@ -102,7 +105,7 @@ def main():
                                     filename='{epoch}-{auc@5:.3f}-{auc@10:.3f}-{auc@20:.3f}')
     lr_monitor = LearningRateMonitor(logging_interval='step')
     
-    earlystopping = EarlyStopping(monitor='auc@10', min_delta=0.005, patience=8, mode='max')
+    earlystopping = EarlyStopping(monitor='auc@10', min_delta=0.005, patience=10, mode='max')
     
     callbacks = [lr_monitor,earlystopping]
     
@@ -122,7 +125,8 @@ def main():
         replace_sampler_ddp=False,  # use custom sampler
         reload_dataloaders_every_epoch=False,  # avoid repeated samples!
         weights_summary='full',
-        profiler=profiler)
+        profiler=profiler,
+        precision = 16 if args.mixed_precision else 32)
     loguru_logger.info(f"Trainer initialized!")
     loguru_logger.info(f"Start training!")
     trainer.fit(model, datamodule=data_module)

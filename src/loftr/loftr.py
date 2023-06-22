@@ -57,7 +57,6 @@ class LoFTR(nn.Module):
             'hw0_c': feat_c0.shape[2:], 'hw1_c': feat_c1.shape[2:],
             'hw0_f': feat_f0.shape[2:], 'hw1_f': feat_f1.shape[2:]
         })
-
         # 2. coarse-level loftr module
         # add featmap with positional encoding, then flatten it to sequence [N, HW, C]
         feat_c0 = rearrange(self.pos_encoding(feat_c0), 'n c h w -> n (h w) c')

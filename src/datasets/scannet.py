@@ -10,8 +10,10 @@ from src.utils.dataset import (
     read_scannet_gray,
     read_scannet_depth,
     read_scannet_pose,
-    read_scannet_intrinsic
+    read_scannet_intrinsic,
+    sample_homography_np
 )
+import cv2
 
 
 class ScanNetDataset(utils.data.Dataset):
@@ -24,6 +26,8 @@ class ScanNetDataset(utils.data.Dataset):
                  min_overlap_score=0.4,
                  augment_fn=None,
                  pose_dir=None,
+                 homo = False,
+                 homo_param = None,
                  **kwargs):
         """Manage one scene of ScanNet Dataset.
         Args:
@@ -40,6 +44,9 @@ class ScanNetDataset(utils.data.Dataset):
         self.pose_dir = pose_dir if pose_dir is not None else root_dir
         self.mode = mode
         self.cross_modal = cross_modal
+
+        self.homo = homo
+        self.homo_param = homo_param
 
         # prepare data_names, intrinsics and extrinsics(T)
         with np.load(npz_path) as data:
@@ -71,59 +78,103 @@ class ScanNetDataset(utils.data.Dataset):
         data_name = self.data_names[idx]
         scene_name, scene_sub_name, stem_name_0, stem_name_1 = data_name
         scene_name = f'scene{scene_name:04d}_{scene_sub_name:02d}'
-
-        # read the grayscale image which will be resized to (1, 480, 640)
-        img_name0 = osp.join(self.root_dir, scene_name, 'color', f'{stem_name_0}.jpg')
-        img_name1 = osp.join(self.root_dir, scene_name, 'color', f'{stem_name_1}.jpg')
         
-        # TODO: Support augmentation & handle seeds for each worker correctly.
-        image0 = read_scannet_gray(img_name0, resize=(640, 480), augment_fn=None)
-                                #    augment_fn=np.random.choice([self.augment_fn, None], p=[0.5, 0.5]))
-        image1 = read_scannet_gray(img_name1, resize=(640, 480), augment_fn=None)
-                                #    augment_fn=np.random.choice([self.augment_fn, None], p=[0.5, 0.5]))
+        if not self.homo:
+            # read the grayscale image which will be resized to (1, 480, 640)
+            img_name0 = osp.join(self.root_dir, scene_name, 'color', f'{stem_name_0}.jpg')
+            img_name1 = osp.join(self.root_dir, scene_name, 'color', f'{stem_name_1}.jpg')
+            
+            # TODO: Support augmentation & handle seeds for each worker correctly.
+            image0 = read_scannet_gray(img_name0, resize=(640, 480), augment_fn=None)
+                                    #    augment_fn=np.random.choice([self.augment_fn, None], p=[0.5, 0.5]))
+            image1 = read_scannet_gray(img_name1, resize=(640, 480), augment_fn=None)
+                                    #    augment_fn=np.random.choice([self.augment_fn, None], p=[0.5, 0.5]))
 
-        # read the intrinsic of depthmap
-        K_0 = K_1 = torch.tensor(self.intrinsics[scene_name].copy(), dtype=torch.float).reshape(3, 3)
+            # read the intrinsic of depthmap
+            K_0 = K_1 = torch.tensor(self.intrinsics[scene_name].copy(), dtype=torch.float).reshape(3, 3)
 
-        # read the depthmap which is stored as (480, 640)
-        if self.mode in ['train', 'val']:
-            depth0, hha0 = read_scannet_depth(osp.join(self.root_dir, scene_name, 'depth', f'{stem_name_0}.png'), self.intrinsics[scene_name].copy(),cross_modal=self.cross_modal)
-            depth1, hha1 = read_scannet_depth(osp.join(self.root_dir, scene_name, 'depth', f'{stem_name_1}.png'), self.intrinsics[scene_name].copy(),cross_modal=self.cross_modal)
+            # read the depthmap which is stored as (480, 640)
+            if self.mode in ['train', 'val']:
+                depth0, hha0 = read_scannet_depth(osp.join(self.root_dir, scene_name, 'depth', f'{stem_name_0}.png'), self.intrinsics[scene_name].copy(),cross_modal=self.cross_modal)
+                depth1, hha1 = read_scannet_depth(osp.join(self.root_dir, scene_name, 'depth', f'{stem_name_1}.png'), self.intrinsics[scene_name].copy(),cross_modal=self.cross_modal)
+            else:
+                depth0 = depth1 = torch.tensor([])
+
+            # read and compute relative poses
+            T_0to1 = torch.tensor(self._compute_rel_pose(scene_name, stem_name_0, stem_name_1),
+                                dtype=torch.float32)
+            T_1to0 = T_0to1.inverse()
+
+            data = {
+                'image0': image0,   # (1, h, w)
+                'depth0': depth0,   # (h, w)
+                'image1': image1,
+                'depth1': depth1,
+                'T_0to1': T_0to1,   # (4, 4)
+                'T_1to0': T_1to0,
+                'K0': K_0,  # (3, 3)
+                'K1': K_1,
+                'dataset_name': 'ScanNet',
+                'scene_id': scene_name,
+                'pair_id': idx,
+                'pair_names': (f'{scene_name}_{stem_name_0}',
+                            f'{scene_name}_{stem_name_1}'),
+            }
+
+            if self.mode in ['train', 'val'] and hha0 is not None:
+                data.update({'hha0': hha0, 'hha1': hha1})
+
+            return data
         else:
-            depth0 = depth1 = torch.tensor([])
+            # read the grayscale image which will be resized to (1, 480, 640)
+            img_name0 = osp.join(self.root_dir, scene_name, 'color', f'{stem_name_0}.jpg')
+            
+            image0 = read_scannet_gray(img_name0, resize=(640, 480), augment_fn=None, homo=True)
+            mat = sample_homography_np(np.array(image0.shape),
+                                    shift=0, perspective=True, scaling=True, rotation=True, translation=True,
+                                    n_scales=5, n_angles=25, scaling_amplitude=self.homo_param["scale"],
+                                    perspective_amplitude_x=self.homo_param["perspective"],
+                                    perspective_amplitude_y=self.homo_param["perspective"],
+                                    patch_ratio=self.homo_param["patch_ratio"],
+                                    max_angle=self.homo_param["rotation"],
+                                    allow_artifacts=False,
+                                    translation_overflow=0.
+                                    )
+            mat = np.linalg.inv(mat)
+            image1 = cv2.warpPerspective(image0, mat, (image0.shape[1], image0.shape[0]))
 
-        # read and compute relative poses
-        T_0to1 = torch.tensor(self._compute_rel_pose(scene_name, stem_name_0, stem_name_1),
-                              dtype=torch.float32)
-        T_1to0 = T_0to1.inverse()
+            image0 = torch.from_numpy(image0).float()[None] / 255
+            image1 = torch.from_numpy(image1).float()[None] / 255
 
-        data = {
-            'image0': image0,   # (1, h, w)
-            'depth0': depth0,   # (h, w)
-            'image1': image1,
-            'depth1': depth1,
-            'T_0to1': T_0to1,   # (4, 4)
-            'T_1to0': T_1to0,
-            'K0': K_0,  # (3, 3)
-            'K1': K_1,
-            'dataset_name': 'ScanNet',
-            'scene_id': scene_name,
-            'pair_id': idx,
-            'pair_names': (osp.join(scene_name, 'color', f'{stem_name_0}.jpg'),
-                           osp.join(scene_name, 'color', f'{stem_name_1}.jpg')),
-            # 'transformation': {
-            #         'type': '3d_reprojection',
-            #         'K0': K_0,
-            #         'K1': K_1,
-            #         'R': T_0to1[:3,:3],
-            #         'T': T_0to1[:3,3],
-            #         'depth0': depth0,
-            #         'depth1': depth1,
-            #     }
+            # read the intrinsic of depthmap
+            K_0 = K_1 = torch.tensor(self.intrinsics[scene_name].copy(), dtype=torch.float).reshape(3, 3)
 
-        }
+            # # read the depthmap which is stored as (480, 640)
+            # if self.mode in ['train', 'val']:
+            #     depth0, hha0 = read_scannet_depth(osp.join(self.root_dir, scene_name, 'depth', f'{stem_name_0}.png'), self.intrinsics[scene_name].copy(),cross_modal=self.cross_modal)
+            #     depth1, hha1 = read_scannet_depth(osp.join(self.root_dir, scene_name, 'depth', f'{stem_name_1}.png'), self.intrinsics[scene_name].copy(),cross_modal=self.cross_modal)
+            # else:
+            #     depth0 = depth1 = torch.tensor([])
 
-        if self.mode in ['train', 'val'] and hha0 is not None:
-            data.update({'hha0': hha0, 'hha1': hha1})
+            # # read and compute relative poses
+            # T_0to1 = torch.tensor(self._compute_rel_pose(scene_name, stem_name_0, stem_name_1),
+            #                     dtype=torch.float32)
+            # T_1to0 = T_0to1.inverse()
 
-        return data
+            data = {
+                'image0': image0,   # (1, h, w)
+                'image1': image1,
+                'K0': K_0,  # (3, 3)
+                'K1': K_1,
+                'mat': torch.tensor(mat, dtype=torch.float32),
+                'dataset_name': 'ScanNet',
+                'scene_id': scene_name,
+                'pair_id': idx,
+                'pair_names': (f'{scene_name}_{stem_name_0}',
+                            f'{scene_name}_{stem_name_1}'),
+            }
+
+            # if self.mode in ['train', 'val'] and hha0 is not None:
+            #     data.update({'hha0': hha0, 'hha1': hha1})
+
+            return data

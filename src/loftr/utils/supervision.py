@@ -5,7 +5,7 @@ import torch
 from einops import repeat
 from kornia.utils import create_meshgrid
 
-from .geometry import warp_kpts
+from .geometry import warp_kpts, omni_warp_kpts
 
 ##############  ↓  Coarse-Level supervision  ↓  ##############
 
@@ -15,6 +15,14 @@ def mask_pts_at_padded_regions(grid_pt, mask):
     """For megadepth dataset, zero-padding exists in images"""
     mask = repeat(mask, 'n h w -> n (h w) c', c=2)
     grid_pt[~mask.bool()] = 0
+    return grid_pt
+
+@torch.no_grad()
+def mask_pts_at_masked_regions(grid_pt, mask):
+    """For megadepth dataset, zero-padding exists in images"""
+    # mask = repeat(mask, 'n h w -> n (h w) c', c=2)
+    mask_indices = mask[torch.arange(mask.shape[0])[:,None], grid_pt.long()[...,1],grid_pt.long()[...,0]]
+    grid_pt[~mask_indices.bool()] = 0
     return grid_pt
 
 
@@ -55,37 +63,75 @@ def spvs_coarse(data, config):
     if 'mask0' in data:
         grid_pt0_i = mask_pts_at_padded_regions(grid_pt0_i, data['mask0'])
         grid_pt1_i = mask_pts_at_padded_regions(grid_pt1_i, data['mask1'])
-
+    if 'mask0_spv' in data:
+        grid_pt0_i = mask_pts_at_masked_regions(grid_pt0_i, data['mask0_spv'])
+        grid_pt1_i = mask_pts_at_masked_regions(grid_pt1_i, data['mask1_spv'])
     # warp kpts bi-directionally and resize them to coarse-level resolution
     # (no depth consistency check, since it leads to worse results experimentally)
     # (unhandled edge case: points with 0-depth will be warped to the left-up corner)
-    _, w_pt0_i = warp_kpts(grid_pt0_i, data['depth0'], data['depth1'], data['T_0to1'], data['K0'], data['K1'])
-    _, w_pt1_i = warp_kpts(grid_pt1_i, data['depth1'], data['depth0'], data['T_1to0'], data['K1'], data['K0'])
-    w_pt0_c = w_pt0_i / scale1
-    w_pt1_c = w_pt1_i / scale0
+    if 'mat' not in data:
+        if config['DATASET']['TRAINVAL_DATA_SOURCE'] == 'C3VD':
+            _, w_pt0_i = omni_warp_kpts(grid_pt0_i, data['depth0'], data['depth1'], data['T_0to1'], data['K0'], data['K1'])
+            _, w_pt1_i = omni_warp_kpts(grid_pt1_i, data['depth1'], data['depth0'], data['T_1to0'], data['K1'], data['K0'])
+            w_pt0_c = w_pt0_i / scale1
+            w_pt1_c = w_pt1_i / scale0
+        else:
+            _, w_pt0_i = warp_kpts(grid_pt0_i, data['depth0'], data['depth1'], data['T_0to1'], data['K0'], data['K1'])
+            _, w_pt1_i = warp_kpts(grid_pt1_i, data['depth1'], data['depth0'], data['T_1to0'], data['K1'], data['K0'])
+            w_pt0_c = w_pt0_i / scale1
+            w_pt1_c = w_pt1_i / scale0
 
-    # 3. check if mutual nearest neighbor
-    w_pt0_c_round = w_pt0_c[:, :, :].round().long()
-    nearest_index1 = w_pt0_c_round[..., 0] + w_pt0_c_round[..., 1] * w1
-    w_pt1_c_round = w_pt1_c[:, :, :].round().long()
-    nearest_index0 = w_pt1_c_round[..., 0] + w_pt1_c_round[..., 1] * w0
+        # 3. check if mutual nearest neighbor
+        w_pt0_c_round = w_pt0_c[:, :, :].round().long()
+        nearest_index1 = w_pt0_c_round[..., 0] + w_pt0_c_round[..., 1] * w1 #(N,L)
+        w_pt1_c_round = w_pt1_c[:, :, :].round().long()
+        nearest_index0 = w_pt1_c_round[..., 0] + w_pt1_c_round[..., 1] * w0 #(N,L)
 
-    # corner case: out of boundary
-    def out_bound_mask(pt, w, h):
-        return (pt[..., 0] < 0) + (pt[..., 0] >= w) + (pt[..., 1] < 0) + (pt[..., 1] >= h)
-    nearest_index1[out_bound_mask(w_pt0_c_round, w1, h1)] = 0
-    nearest_index0[out_bound_mask(w_pt1_c_round, w0, h0)] = 0
+        # corner case: out of boundary
+        def out_bound_mask(pt, w, h):
+            return (pt[..., 0] < 0) + (pt[..., 0] >= w) + (pt[..., 1] < 0) + (pt[..., 1] >= h)
+        nearest_index1[out_bound_mask(w_pt0_c_round, w1, h1)] = 0
+        nearest_index0[out_bound_mask(w_pt1_c_round, w0, h0)] = 0
 
-    loop_back = torch.stack([nearest_index0[_b][_i] for _b, _i in enumerate(nearest_index1)], dim=0)
-    correct_0to1 = loop_back == torch.arange(h0*w0, device=device)[None].repeat(N, 1)
-    correct_0to1[:, 0] = False  # ignore the top-left corner
+        loop_back = torch.stack([nearest_index0[_b][_i] for _b, _i in enumerate(nearest_index1)], dim=0) #(N,L=h0*w0)
+        correct_0to1 = loop_back == torch.arange(h0*w0, device=device)[None].repeat(N, 1)
+        correct_0to1[:, 0] = False  # ignore the top-left corner
 
-    # 4. construct a gt conf_matrix
-    conf_matrix_gt = torch.zeros(N, h0*w0, h1*w1, device=device)
-    b_ids, i_ids = torch.where(correct_0to1 != 0)
-    j_ids = nearest_index1[b_ids, i_ids]
+        # 4. construct a gt conf_matrix
+        conf_matrix_gt = torch.zeros(N, h0*w0, h1*w1, device=device)
+        b_ids, i_ids = torch.where(correct_0to1 != 0)
+        j_ids = nearest_index1[b_ids, i_ids]
 
-    conf_matrix_gt[b_ids, i_ids, j_ids] = 1
+        conf_matrix_gt[b_ids, i_ids, j_ids] = 1
+    else:
+        w_pt0_i = (data['mat'] @ torch.cat((grid_pt0_i.transpose(1,2), torch.ones((grid_pt0_i.shape[0],1, grid_pt0_i.shape[1]), device=device)), dim=1)).transpose(1,2)  # (N,hw,3)
+        w_pt0_i = w_pt0_i[..., :2] / w_pt0_i[..., [2]] #(N,hw,2)
+
+        def out_bound_mask(pt, w, h):
+            return (pt[..., 0] < 0) + (pt[..., 0] >= w) + (pt[..., 1] < 0) + (pt[..., 1] >= h)
+
+        if 'mask1_spv' in data:
+            w_pt0_i = mask_pts_at_masked_regions(w_pt0_i, data['mask1_spv'])
+        
+        w_pt0_c = w_pt0_i / scale1
+
+        # 3. check if mutual nearest neighbor
+        w_pt0_c_round = w_pt0_c[:, :, :].round().long()
+        nearest_index1 = w_pt0_c_round[..., 0] + w_pt0_c_round[..., 1] * w1 #(N,L)
+        
+        # corner case: out of boundary
+        nearest_index1[out_bound_mask(w_pt0_c_round, w1, h1)] = 0
+
+        # 4. construct a gt conf_matrix
+        conf_matrix_gt = torch.zeros(N, h0*w0, h1*w1, device=device)
+        b_ids, i_ids = torch.where(nearest_index1 != 0)
+        j_ids = nearest_index1[b_ids, i_ids]
+        # dis = torch.norm(w_pt0_i[b_ids, i_ids]-grid_pt1_i[b_ids, j_ids], dim=-1)
+        # accept_idx = torch.where(dis<=scale1)
+        # b_ids, i_ids, j_ids = b_ids[accept_idx], i_ids[accept_idx], j_ids[accept_idx]
+    
+        conf_matrix_gt[b_ids, i_ids, j_ids] = 1
+    
     data.update({'conf_matrix_gt': conf_matrix_gt})
 
     # 5. save coarse matches(gt) for training fine level
@@ -105,12 +151,14 @@ def spvs_coarse(data, config):
     # 6. save intermediate results (for fast fine-level computation)
     data.update({
         'spv_w_pt0_i': w_pt0_i,
-        'spv_pt1_i': grid_pt1_i
+        'spv_pt1_i': grid_pt1_i,
+        'spv_pt0_i': grid_pt0_i
     })
+
 def compute_supervision_coarse(data, config):
     assert len(set(data['dataset_name'])) == 1, "Do not support mixed datasets training!"
     data_source = data['dataset_name'][0]
-    if data_source.lower() in ['scannet', 'megadepth']:
+    if data_source.lower() in ['scannet', 'megadepth', 'c3vd']:
         spvs_coarse(data, config)
     else:
         raise ValueError(f'Unknown data source: {data_source}')
@@ -144,7 +192,7 @@ def spvs_fine(data, config):
 
 def compute_supervision_fine(data, config):
     data_source = data['dataset_name'][0]
-    if data_source.lower() in ['scannet', 'megadepth']:
+    if data_source.lower() in ['scannet', 'megadepth', 'c3vd']:
         spvs_fine(data, config)
     else:
         raise NotImplementedError

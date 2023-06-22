@@ -5,6 +5,7 @@ from collections import OrderedDict
 from loguru import logger
 from kornia.geometry.epipolar import numeric
 from kornia.geometry.conversions import convert_points_to_homogeneous
+from src.loftr.utils.geometry import cam2world
 
 
 # --- METRICS ---
@@ -27,17 +28,23 @@ def relative_pose_error(T_0to1, R, t, ignore_gt_t_thr=0.0):
     return t_err, R_err
 
 
-def symmetric_epipolar_distance(pts0, pts1, E, K0, K1):
+def symmetric_epipolar_distance(pts0, pts1, E, K0, K1, omni=False):
     """Squared symmetric epipolar distance.
     This can be seen as a biased estimation of the reprojection error.
     Args:
         pts0 (torch.Tensor): [N, 2]
         E (torch.Tensor): [3, 3]
     """
-    pts0 = (pts0 - K0[[0, 1], [2, 2]][None]) / K0[[0, 1], [0, 1]][None]
-    pts1 = (pts1 - K1[[0, 1], [2, 2]][None]) / K1[[0, 1], [0, 1]][None]
-    pts0 = convert_points_to_homogeneous(pts0)
-    pts1 = convert_points_to_homogeneous(pts1)
+    if omni:
+        pts0 = cam2world(pts0.unsqueeze(0).transpose(1,2), K0).transpose(1,2).squeeze(0)  
+        pts1 = cam2world(pts1.unsqueeze(0).transpose(1,2), K1).transpose(1,2).squeeze(0)
+        pts0 = pts0/pts0[:,[2]]
+        pts1 = pts1/pts1[:,[2]]
+    else:
+        pts0 = (pts0 - K0[[0, 1], [2, 2]][None]) / K0[[0, 1], [0, 1]][None]
+        pts1 = (pts1 - K1[[0, 1], [2, 2]][None]) / K1[[0, 1], [0, 1]][None]
+        pts0 = convert_points_to_homogeneous(pts0)
+        pts1 = convert_points_to_homogeneous(pts1)
 
     Ep0 = pts0 @ E.T  # [N, 3]
     p1Ep0 = torch.sum(pts1 * Ep0, -1)  # [N,]
@@ -62,14 +69,37 @@ def compute_symmetrical_epipolar_errors(data):
     epi_errs = []
     for bs in range(Tx.size(0)):
         mask = m_bids == bs
-        epi_errs.append(
-            symmetric_epipolar_distance(pts0[mask], pts1[mask], E_mat[bs], data['K0'][bs], data['K1'][bs]))
+            
+        if data['dataset_name'][0].lower() in ['c3vd']:
+            epi_errs.append(
+                symmetric_epipolar_distance(pts0[mask], pts1[mask], E_mat[bs], data['K0'], data['K1'], omni=True))
+        else:
+            epi_errs.append(
+                symmetric_epipolar_distance(pts0[mask], pts1[mask], E_mat[bs], data['K0'][bs], data['K1'][bs]))
+            
     epi_errs = torch.cat(epi_errs, dim=0)
 
     data.update({'epi_errs': epi_errs})
 
+# def estimate_pose(kpts0, kpts1, K0, K1, thresh, conf=0.99999, omni=False):
+#     if len(kpts0) < 5:
+#         return None
+#     # normalize keypoints
+#     if omni:
+#         kpts0 = cam2world(kpts0.unsqueeze(0).transpose(1,2), K0).transpose(1,2).squeeze(0)  
+#         kpts1 = cam2world(kpts1.unsqueeze(0).transpose(1,2), K1).transpose(1,2).squeeze(0) 
+#         kpts0 = kpts0[:,:2]/kpts0[:,2]
+#         kpts1 = kpts1[:,:2]/kpts1[:,2]
+#         ransac_thr = thresh /np.mean([363.87561385714594,341.13920749319])
+#     else:
+#         kpts0 = (kpts0 - K0[[0, 1], [2, 2]][None]) / K0[[0, 1], [0, 1]][None]
+#         kpts1 = (kpts1 - K1[[0, 1], [2, 2]][None]) / K1[[0, 1], [0, 1]][None]
+#         # normalize ransac threshold
+#         K0 = K0.cpu().numpy()
+#         K1 = K1.cpu().numpy()
+#         ransac_thr = thresh / np.mean([K0[0, 0], K1[1, 1], K0[0, 0], K1[1, 1]])
 
-def estimate_pose(kpts0, kpts1, K0, K1, thresh, conf=0.99999):
+def estimate_pose(kpts0, kpts1, K0, K1, thresh, conf=0.99999, omni=False):
     if len(kpts0) < 5:
         return None
     # normalize keypoints
@@ -118,6 +148,7 @@ def compute_pose_errors(data, config):
     K1 = data['K1'].cpu().numpy()
     T_0to1 = data['T_0to1'].cpu().numpy()
 
+#ret = estimate_pose(pts0[mask], pts1[mask], data['K0'], data['K1'], pixel_thr, conf=conf, omni=True)
     for bs in range(K0.shape[0]):
         mask = m_bids == bs
         ret = estimate_pose(pts0[mask], pts1[mask], K0[bs], K1[bs], pixel_thr, conf=conf)

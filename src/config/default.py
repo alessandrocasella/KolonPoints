@@ -1,4 +1,5 @@
 from yacs.config import CfgNode as CN
+import math
 _CN = CN()
 
 ##############  ↓  LoFTR Pipeline  ↓  ##############
@@ -68,7 +69,7 @@ _CN.DATASET = CN()
 # 1. data config
 _CN.DATASET.CROSS_MODAL = False
 # training and validating
-_CN.DATASET.TRAINVAL_DATA_SOURCE = None  # options: ['ScanNet', 'MegaDepth']
+_CN.DATASET.TRAINVAL_DATA_SOURCE = None  # options: ['ScanNet', 'MegaDepth', 'C3VD']
 _CN.DATASET.TRAIN_DATA_ROOT = None
 _CN.DATASET.TRAIN_POSE_ROOT = None  # (optional directory for poses)
 _CN.DATASET.TRAIN_NPZ_ROOT = None
@@ -98,6 +99,15 @@ _CN.DATASET.MGDPT_IMG_RESIZE = 640  # resize the longer side, zero-pad bottom-ri
 _CN.DATASET.MGDPT_IMG_PAD = True  # pad img to square with size = MGDPT_IMG_RESIZE
 _CN.DATASET.MGDPT_DEPTH_PAD = True  # pad depthmap to square with size = 2000
 _CN.DATASET.MGDPT_DF = 8
+
+# Homography adaptation config for training
+_CN.DATASET.HOMO = CN()
+_CN.DATASET.HOMO.TRAIN = False
+#_CN.DATASET.HOMO.TRANSLATION = {'range': [-10, 10], 'var': 1.0}
+_CN.DATASET.HOMO.ROTATION = math.pi/3
+_CN.DATASET.HOMO.SCALE = 0.3
+_CN.DATASET.HOMO.PERSPECTIVE = 0.5
+_CN.DATASET.HOMO.PATCH_RATIO = 0.8
 
 ##############  Trainer  ##############
 _CN.TRAINER = CN()
@@ -131,6 +141,7 @@ _CN.TRAINER.ENABLE_PLOTTING = True
 _CN.TRAINER.N_VAL_PAIRS_TO_PLOT = 32     # number of val/test paris for plotting
 _CN.TRAINER.PLOT_MODE = 'evaluation'  # ['evaluation', 'confidence']
 _CN.TRAINER.PLOT_MATCHES_ALPHA = 'dynamic'
+_CN.TRAINER.PLOTTING_SUPERVISION = True # plot supervision
 
 # geometric metrics and pose solver
 _CN.TRAINER.EPI_ERR_THR = 5e-4  # recommendation: 5e-4 for ScanNet, 1e-4 for MegaDepth (from SuperGlue)

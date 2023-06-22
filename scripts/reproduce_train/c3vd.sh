@@ -5,8 +5,8 @@ PROJECT_DIR="${SCRIPTPATH}/../../"
 
 cd $PROJECT_DIR
 
-data_cfg_path="configs/data/scannet_trainval.py"
-main_cfg_path="configs/loftr/indoor/loftr.py"   #options: [loftr.py crossmodal.py]
+data_cfg_path="configs/data/c3vd_trainval.py"
+main_cfg_path="configs/loftr/c3vd/loftr.py"  #options: [loftr.py crossmodal.py]
 
 n_nodes=1
 n_gpus_per_node=1
@@ -15,7 +15,7 @@ batch_size=2
 pin_memory=true
 
 base_name=$(basename "$main_cfg_path" .py)
-exp_name="indoor-ds-bs=$(($n_gpus_per_node * $n_nodes * $batch_size))_${base_name}"
+exp_name="c3vd-ds-bs=$(($n_gpus_per_node * $n_nodes * $batch_size))_${base_name}"
 
 python -u ./train.py \
     ${data_cfg_path} \
@@ -29,4 +29,4 @@ python -u ./train.py \
     --limit_val_batches=1. \
     --num_sanity_val_steps=10 \
     --benchmark=True \
-    --max_epochs=70 
+    --max_epochs=40

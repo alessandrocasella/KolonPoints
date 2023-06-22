@@ -7,7 +7,6 @@ from pathlib import Path
 import torch
 import numpy as np
 import pytorch_lightning as pl
-from matplotlib import pyplot as plt
 
 from src.loftr import LoFTR
 from src.loftr.utils.supervision import compute_supervision_coarse, compute_supervision_fine
@@ -18,7 +17,7 @@ from src.utils.metrics import (
     compute_pose_errors,
     aggregate_metrics
 )
-from src.utils.plotting import make_matching_figures
+from src.utils.plotting import make_matching_figures, make_supervision_figures
 from src.utils.comm import gather, all_gather
 from src.utils.misc import lower_config, flattenList
 from src.utils.profiler import PassThroughProfiler
@@ -62,8 +61,9 @@ class PL_LoFTR(pl.LightningModule):
             optimizer_closure, on_tpu, using_native_amp, using_lbfgs):
         # learning rate warm up
         if self.trainer.global_step==0:
-            logger.info(f'{len(self.trainer.datamodule.train_dataloader())} steps per epoch')
-            self.config.TRAINER.WARMUP_STEP = 3*len(self.trainer.datamodule.train_dataloader())
+            self.step_per_epoch = len(self.trainer.datamodule.train_dataloader())
+            logger.info(f'{self.step_per_epoch} steps per epoch')
+            self.config.TRAINER.WARMUP_STEP = 3*self.step_per_epoch
         if self.trainer.global_step < self.config.TRAINER.WARMUP_STEP:
             if self.config.TRAINER.WARMUP_TYPE == 'linear':
                 base_lr = self.config.TRAINER.WARMUP_RATIO * self.config.TRAINER.TRUE_LR
@@ -81,43 +81,48 @@ class PL_LoFTR(pl.LightningModule):
         optimizer.step(closure=optimizer_closure)
         optimizer.zero_grad()
         
-    def optimizer_step_(
-            self, optimizer):
-        # learning rate warm up
-        if self.trainer.global_step==0:
-            logger.info(f'{len(self.trainer.datamodule.train_dataloader())} steps per epoch')
-            self.config.TRAINER.WARMUP_STEP = 3*len(self.trainer.datamodule.train_dataloader())
-        if self.trainer.global_step < self.config.TRAINER.WARMUP_STEP:
-            if self.config.TRAINER.WARMUP_TYPE == 'linear':
-                base_lr = self.config.TRAINER.WARMUP_RATIO * self.config.TRAINER.TRUE_LR
-                lr = base_lr + \
-                    (self.trainer.global_step / self.config.TRAINER.WARMUP_STEP) * \
-                    abs(self.config.TRAINER.TRUE_LR - base_lr)
-                for pg in optimizer.param_groups:
-                    pg['lr'] = lr
-            elif self.config.TRAINER.WARMUP_TYPE == 'constant':
-                pass
-            else:
-                raise ValueError(f'Unknown lr warm-up strategy: {self.config.TRAINER.WARMUP_TYPE}')
-
-        # # update params
-        # optimizer.step(closure=optimizer_closure)
-        # optimizer.zero_grad()
-
     def _trainval_inference(self, batch):
-        
         with self.profiler.profile("Compute coarse supervision"):
             compute_supervision_coarse(batch, self.config)
-        
+        '''
+            data (dict): {
+            "conf_matrix_gt": [N, hw0, hw1],
+            'spv_b_ids': [M]
+            'spv_i_ids': [M]
+            'spv_j_ids': [M]
+            'spv_w_pt0_i': [N, hw0, 2], in original image resolution
+            'spv_pt1_i': [N, hw1, 2], in original image resolution
+        }
+        '''
+
         with self.profiler.profile("LoFTR"):
             self.matcher(batch)
-        
-        
+        '''
+            data (dict): {
+                'b_ids' (torch.Tensor): [M'],
+                'i_ids' (torch.Tensor): [M'],
+                'j_ids' (torch.Tensor): [M'],
+                'gt_mask' (torch.Tensor): [M'],
+                'mkpts0_c' (torch.Tensor): [M, 2],
+                'mkpts1_c' (torch.Tensor): [M, 2],
+                'mconf' (torch.Tensor): [M]}
+                'm_bids'
+            data (dict):{
+                'expec_f' (torch.Tensor): [M, 3],
+                'mkpts0_f' (torch.Tensor): [M, 2],
+                'mkpts1_f' (torch.Tensor): [M, 2]}
+        '''
+         
         with self.profiler.profile("Compute fine supervision"):
             compute_supervision_fine(batch, self.config)
+        
+        '''
+            "expec_f_gt"
+        '''
             
         with self.profiler.profile("Compute losses"):
             self.loss(batch)
+            
     def _compute_metrics(self, batch):
         with self.profiler.profile("Copmute metrics"):
             compute_symmetrical_epipolar_errors(batch)  # compute epi_errs for each match
@@ -156,6 +161,18 @@ class PL_LoFTR(pl.LightningModule):
                 figures = make_matching_figures(batch, self.config, self.config.TRAINER.PLOT_MODE)
                 for k, v in figures.items():
                     self.logger.experiment.add_figure(f'train_match/{k}', v, self.global_step)
+            
+            if self.current_epoch < 1:
+                if self.config.TRAINER.PLOTTING_SUPERVISION:
+                    figures = make_supervision_figures(batch)
+                    for k, v in figures.items():
+                        self.logger.experiment.add_images(f'{k}', v[0], self.global_step,dataformats='HWC')
+
+        if self.trainer.global_rank == 0 and self.global_step % self.step_per_epoch == 0:
+            if self.config.TRAINER.PLOTTING_SUPERVISION:
+                figures = make_supervision_figures(batch)
+                for k, v in figures.items():
+                    self.logger.experiment.add_images(f'{k}', v[0], self.global_step,dataformats='HWC')
 
         return {'loss': batch['loss']}
 
@@ -175,8 +192,7 @@ class PL_LoFTR(pl.LightningModule):
         figures = {self.config.TRAINER.PLOT_MODE: []}
 
         if batch_idx % val_plot_interval == 0:
-            # figures = make_matching_figures(batch, self.config, mode=self.config.TRAINER.PLOT_MODE)
-            figures = None
+            figures = make_matching_figures(batch, self.config, mode=self.config.TRAINER.PLOT_MODE)
         return {
             **ret_dict,
             'loss_scalars': batch['loss_scalars'],
@@ -207,8 +223,8 @@ class PL_LoFTR(pl.LightningModule):
                 multi_val_metrics[f'auc@{thr}'].append(val_metrics_4tb[f'auc@{thr}'])
             
             # # 3. figures
-            # _figures = [o['figures'] for o in outputs]
-            # figures = {k: flattenList(gather(flattenList([_me[k] for _me in _figures]))) for k in _figures[0]}
+            _figures = [o['figures'] for o in outputs]
+            figures = {k: flattenList(gather(flattenList([_me[k] for _me in _figures]))) for k in _figures[0]}
 
             # tensorboard records only on rank 0
             if self.trainer.global_rank == 0:
@@ -219,12 +235,11 @@ class PL_LoFTR(pl.LightningModule):
                 for k, v in val_metrics_4tb.items():
                     self.logger.experiment.add_scalar(f"metrics_{valset_idx}/{k}", v, global_step=cur_epoch)
                 
-                # for k, v in figures.items():
-                #     if self.trainer.global_rank == 0:
-                #         for plot_idx, fig in enumerate(v):
-                #             self.logger.experiment.add_figure(
-                #                 f'val_match_{valset_idx}/{k}/pair-{plot_idx}', fig, cur_epoch, close=True)
-            # plt.close('all')
+                for k, v in figures.items():
+                    if self.trainer.global_rank == 0:
+                        for plot_idx, fig in enumerate(v):
+                            self.logger.experiment.add_figure(
+                                f'val_match_{valset_idx}/{k}/pair-{plot_idx}', fig, cur_epoch, close=True)
 
         for thr in [5, 10, 20]:
             # log on all ranks for ModelCheckpoint callback to work properly

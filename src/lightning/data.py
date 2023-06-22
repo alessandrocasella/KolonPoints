@@ -27,6 +27,7 @@ from src.datasets.megadepth import MegaDepthDataset
 from src.datasets.scannet import ScanNetDataset
 from src.datasets.c3vd import C3VDDataset
 from src.datasets.sampler import RandomConcatSampler
+from src.utils.misc import lower_config
 
 
 class MultiSceneDataModule(pl.LightningDataModule):
@@ -43,6 +44,7 @@ class MultiSceneDataModule(pl.LightningDataModule):
         self.trainval_data_source = config.DATASET.TRAINVAL_DATA_SOURCE
         self.test_data_source = config.DATASET.TEST_DATA_SOURCE
         # training and validating
+        self.homo = lower_config(config.DATASET.HOMO)
         self.train_data_root = config.DATASET.TRAIN_DATA_ROOT
         self.train_pose_root = config.DATASET.TRAIN_POSE_ROOT  # (optional)
         self.train_npz_root = config.DATASET.TRAIN_NPZ_ROOT
@@ -132,7 +134,9 @@ class MultiSceneDataModule(pl.LightningDataModule):
                 mode='train',
                 min_overlap_score=self.min_overlap_score_train,
                 pose_dir=self.train_pose_root,
-                cross_modal = self.cross_modal)
+                cross_modal = self.cross_modal,
+                homo = self.homo['train'],
+                homo_param = self.homo)
             # setup multiple (optional) validation subsets
             if isinstance(self.val_list_path, (list, tuple)):
                 self.val_dataset = []
@@ -179,7 +183,9 @@ class MultiSceneDataModule(pl.LightningDataModule):
                        mode='train',
                        min_overlap_score=0.,
                        pose_dir=None,
-                       cross_modal = False):
+                       cross_modal = False,
+                       homo = False,
+                       homo_param = None):
         """ Setup train / val / test set"""
         with open(scene_list_path, 'r') as f:
             npz_names = [name.split()[0]+'.npz' for name in f.readlines()]
@@ -194,7 +200,7 @@ class MultiSceneDataModule(pl.LightningDataModule):
                             if self.parallel_load_data \
                             else self._build_concat_dataset
         return dataset_builder(data_root, local_npz_names, split_npz_root, intri_path,
-                                mode=mode, min_overlap_score=min_overlap_score, pose_dir=pose_dir, cross_modal=cross_modal)
+                                mode=mode, min_overlap_score=min_overlap_score, pose_dir=pose_dir, cross_modal=cross_modal, homo = homo, homo_param = homo_param)
 
     def _build_concat_dataset(
         self,
@@ -205,7 +211,9 @@ class MultiSceneDataModule(pl.LightningDataModule):
         mode,
         min_overlap_score=0.,
         pose_dir=None,
-        cross_modal=False
+        cross_modal=False,
+        homo = False,
+        homo_param = None
     ):
         datasets = []
         augment_fn = self.augment_fn if mode == 'train' else None
@@ -226,7 +234,9 @@ class MultiSceneDataModule(pl.LightningDataModule):
                                    min_overlap_score=min_overlap_score,
                                    augment_fn=augment_fn,
                                    pose_dir=pose_dir,
-                                   cross_modal=cross_modal))
+                                   cross_modal=cross_modal,
+                                   homo = homo,
+                                   homo_param = homo_param))
             elif data_source == 'C3VD':
                 datasets.append(
                     C3VDDataset(data_root,
@@ -235,7 +245,11 @@ class MultiSceneDataModule(pl.LightningDataModule):
                                    mode=mode,
                                    min_overlap_score=min_overlap_score,
                                    augment_fn=augment_fn,
-                                   pose_dir=pose_dir))
+                                   pose_dir=pose_dir,
+                                   cross_modal=cross_modal,
+                                   coarse_scale=self.coarse_scale,
+                                   homo = homo,
+                                   homo_param = homo_param))
             elif data_source == 'MegaDepth':
                 datasets.append(
                     MegaDepthDataset(data_root,
