@@ -6,6 +6,7 @@ _CN = CN()
 _CN.LOFTR = CN()
 _CN.LOFTR.BACKBONE_TYPE = 'ResNetFPN'
 _CN.LOFTR.RESOLUTION = (8, 2)  # options: [(8, 2), (16, 4)]
+_CN.LOFTR.SUPERPOINT = False #use superpoint frontend to spv
 _CN.LOFTR.FINE_WINDOW_SIZE = 5  # window_size in fine_level, must be odd
 _CN.LOFTR.FINE_CONCAT_COARSE_FEAT = True
 
@@ -103,11 +104,12 @@ _CN.DATASET.MGDPT_DF = 8
 # Homography adaptation config for training
 _CN.DATASET.HOMO = CN()
 _CN.DATASET.HOMO.TRAIN = False
+_CN.DATASET.HOMO.VAL = False
 #_CN.DATASET.HOMO.TRANSLATION = {'range': [-10, 10], 'var': 1.0}
-_CN.DATASET.HOMO.ROTATION = math.pi/3
-_CN.DATASET.HOMO.SCALE = 0.3
-_CN.DATASET.HOMO.PERSPECTIVE = 0.5
-_CN.DATASET.HOMO.PATCH_RATIO = 0.8
+_CN.DATASET.HOMO.ROTATION = math.pi/2
+_CN.DATASET.HOMO.SCALE = 0.2
+_CN.DATASET.HOMO.PERSPECTIVE = 0.2
+_CN.DATASET.HOMO.PATCH_RATIO = 0.7
 
 ##############  Trainer  ##############
 _CN.TRAINER = CN()
@@ -141,7 +143,7 @@ _CN.TRAINER.ENABLE_PLOTTING = True
 _CN.TRAINER.N_VAL_PAIRS_TO_PLOT = 32     # number of val/test paris for plotting
 _CN.TRAINER.PLOT_MODE = 'evaluation'  # ['evaluation', 'confidence']
 _CN.TRAINER.PLOT_MATCHES_ALPHA = 'dynamic'
-_CN.TRAINER.PLOTTING_SUPERVISION = True # plot supervision
+_CN.TRAINER.PLOTTING_TEST_RESULT = True
 
 # geometric metrics and pose solver
 _CN.TRAINER.EPI_ERR_THR = 5e-4  # recommendation: 5e-4 for ScanNet, 1e-4 for MegaDepth (from SuperGlue)

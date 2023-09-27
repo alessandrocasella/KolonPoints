@@ -165,7 +165,7 @@ def read_scannet_gray(path, resize=(640, 480), augment_fn=None, homo=False):
     else:
         return torch.from_numpy(image).float()[None] / 255
 
-def read_c3vd_gray(path, resize=None, augment_fn=None, with_mask=True, homo=False):
+def read_c3vd_gray(path, resize=None, augment_fn=None, with_mask=True, return_np=False):
     """
     Args:
         resize (tuple): align image to depthmap, in (w, h).
@@ -184,20 +184,19 @@ def read_c3vd_gray(path, resize=None, augment_fn=None, with_mask=True, homo=Fals
         darkness_threshold = 5
 
         # Create a mask by thresholding the grayscale image
-        mask = np.where(image < darkness_threshold, 255, 0).astype(np.uint8)
+        mask = np.where(image < darkness_threshold, 0, 255).astype(np.uint8)
 
         # Perform morphological closing to fill small holes in the mask
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         closed_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         closed_mask = cv2.GaussianBlur(closed_mask, (13, 13), 0)
 
-        if not homo:
-            closed_mask = closed_mask==0
+        closed_mask = closed_mask==255
     else:
-        closed_mask = None
+        closed_mask = np.array([np.nan])
 
     # (h, w) -> (1, h, w) and normalized
-    if homo:
+    if return_np:
         return image, closed_mask
     else:
         return torch.from_numpy(image).float()[None] / 255, torch.from_numpy(closed_mask)
@@ -223,6 +222,22 @@ def read_scannet_depth(path,K,cross_modal=False):
     else: 
         hha = None
     return depth, hha
+
+def read_c3vd_depth_mask(path, resize=(640, 480)):
+    depth = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    if resize:
+        depth = cv2.resize(depth, resize)
+    sobelx = cv2.Sobel(depth, cv2.CV_16S, 1, 0, ksize=-1)  
+    sobely = cv2.Sobel(depth, cv2.CV_16S, 0, 1, ksize=-1)  
+    abx = cv2.convertScaleAbs(sobelx) 
+    aby = cv2.convertScaleAbs(sobely)  
+    dst = cv2.addWeighted(abx, 0.5, aby, 0.5, 0)  
+
+    blurred_edges = dst
+    blurred_edges = cv2.GaussianBlur(blurred_edges, (5, 5), 0)
+    blurred_edges = blurred_edges>np.quantile(blurred_edges, 0.9)
+
+    return blurred_edges
 
 def read_c3vd_depth(path, K ,cross_modal=False, resize=(640, 480)):
     if str(path).startswith('s3://'):
@@ -359,6 +374,9 @@ def sample_homography_np(
     # Corners of the output image
     pts1 = np.stack([[0., 0.], [0., 1.], [1., 1.], [1., 0.]], axis=0)
     # Corners of the input patch
+    
+    patch_ratio = np.random.uniform(patch_ratio, 0.8)
+    
     margin = (1 - patch_ratio) / 2
     pts2 = margin + np.array([[0, 0], [0, patch_ratio],
                                  [patch_ratio, patch_ratio], [patch_ratio, 0]])

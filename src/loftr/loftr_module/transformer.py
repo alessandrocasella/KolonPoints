@@ -47,7 +47,7 @@ class LoFTREncoderLayer(nn.Module):
         query = self.q_proj(query).view(bs, -1, self.nhead, self.dim)  # [N, L, (H, D)]
         key = self.k_proj(key).view(bs, -1, self.nhead, self.dim)  # [N, S, (H, D)]
         value = self.v_proj(value).view(bs, -1, self.nhead, self.dim)
-        message = self.attention(query, key, value, q_mask=x_mask, kv_mask=source_mask)  # [N, L, (H, D)]
+        message, att = self.attention(query, key, value, q_mask=x_mask, kv_mask=source_mask)  # [N, L, (H, D)]
         message = self.merge(message.view(bs, -1, self.nhead*self.dim))  # [N, L, C]
         message = self.norm1(message)
 
@@ -55,7 +55,7 @@ class LoFTREncoderLayer(nn.Module):
         message = self.mlp(torch.cat([x, message], dim=2))
         message = self.norm2(message)
 
-        return x + message
+        return x + message, att
 
 
 class LocalFeatureTransformer(nn.Module):
@@ -90,12 +90,13 @@ class LocalFeatureTransformer(nn.Module):
 
         for layer, name in zip(self.layers, self.layer_names):
             if name == 'self':
-                feat0 = layer(feat0, feat0, mask0, mask0)
-                feat1 = layer(feat1, feat1, mask1, mask1)
+                feat0, self_att0 = layer(feat0, feat0, mask0, mask0)
+                feat1, self_att1 = layer(feat1, feat1, mask1, mask1)
             elif name == 'cross':
-                feat0 = layer(feat0, feat1, mask0, mask1)
-                feat1 = layer(feat1, feat0, mask1, mask0)
+                feat0, cross_att0 = layer(feat0, feat1, mask0, mask1)
+                feat1, cross_att1 = layer(feat1, feat0, mask1, mask0)
             else:
                 raise KeyError
 
-        return feat0, feat1
+        return feat0, feat1, {'self_att': [self_att0, self_att1],
+                              'cross_att': [cross_att0, cross_att1]}

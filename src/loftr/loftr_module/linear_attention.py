@@ -30,7 +30,11 @@ class LinearAttention(Module):
         """
         Q = self.feature_map(queries)
         K = self.feature_map(keys)
-
+        QK = torch.einsum("nlhd,nshd->nlsh", Q, K).detach()
+        # attention = torch.softmax(QK, dim=2)
+        QK = torch.mean(QK, dim=3)
+        attention = QK / QK.sum(dim=2, keepdim=True)
+        
         # set padded position to zero
         if q_mask is not None:
             Q = Q * q_mask[:, :, None, None]
@@ -44,7 +48,7 @@ class LinearAttention(Module):
         Z = 1 / (torch.einsum("nlhd,nhd->nlh", Q, K.sum(dim=1)) + self.eps)
         queried_values = torch.einsum("nlhd,nhdv,nlh->nlhv", Q, KV, Z) * v_length
 
-        return queried_values.contiguous()
+        return queried_values.contiguous(), attention.contiguous()
 
 
 class FullAttention(Module):
@@ -77,5 +81,6 @@ class FullAttention(Module):
             A = self.dropout(A)
 
         queried_values = torch.einsum("nlsh,nshd->nlhd", A, values)
+        attention = torch.mean(A, dim=3)
 
-        return queried_values.contiguous()
+        return queried_values.contiguous(), attention.contiguous()

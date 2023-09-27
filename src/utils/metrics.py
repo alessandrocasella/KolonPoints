@@ -36,8 +36,17 @@ def symmetric_epipolar_distance(pts0, pts1, E, K0, K1, omni=False):
         E (torch.Tensor): [3, 3]
     """
     if omni:
-        pts0 = cam2world(pts0.unsqueeze(0).transpose(1,2), K0).transpose(1,2).squeeze(0)  
-        pts1 = cam2world(pts1.unsqueeze(0).transpose(1,2), K1).transpose(1,2).squeeze(0)
+        intrinsics = {'xc': 322.629748325705,
+                    'yc': 242.315857619958,
+                    'ss': [341.802697729524,0.,-0.00183198083674977,3.17181248781474e-06,-1.36076040513106e-08],
+                    'c': 1.06667265893937,
+                    'd': 0.00666183008889951,
+                    'e': -0.00631154881014278}
+        device = pts0.device
+        pts0 = cam2world(pts0.transpose(1,0).cpu().numpy(), intrinsics).transpose() 
+        pts1 = cam2world(pts1.transpose(1,0).cpu().numpy(), intrinsics).transpose()
+        pts0 = torch.tensor(pts0, device=device, dtype=torch.float32)
+        pts1 = torch.tensor(pts1, device=device, dtype=torch.float32)
         pts0 = pts0/pts0[:,[2]]
         pts1 = pts1/pts1[:,[2]]
     else:
@@ -72,7 +81,7 @@ def compute_symmetrical_epipolar_errors(data):
             
         if data['dataset_name'][0].lower() in ['c3vd']:
             epi_errs.append(
-                symmetric_epipolar_distance(pts0[mask], pts1[mask], E_mat[bs], data['K0'], data['K1'], omni=True))
+                symmetric_epipolar_distance(pts0[mask], pts1[mask], E_mat[bs], data['K0'][bs], data['K1'][bs], omni=True))
         else:
             epi_errs.append(
                 symmetric_epipolar_distance(pts0[mask], pts1[mask], E_mat[bs], data['K0'][bs], data['K1'][bs]))
@@ -81,30 +90,92 @@ def compute_symmetrical_epipolar_errors(data):
 
     data.update({'epi_errs': epi_errs})
 
-# def estimate_pose(kpts0, kpts1, K0, K1, thresh, conf=0.99999, omni=False):
-#     if len(kpts0) < 5:
-#         return None
-#     # normalize keypoints
-#     if omni:
-#         kpts0 = cam2world(kpts0.unsqueeze(0).transpose(1,2), K0).transpose(1,2).squeeze(0)  
-#         kpts1 = cam2world(kpts1.unsqueeze(0).transpose(1,2), K1).transpose(1,2).squeeze(0) 
-#         kpts0 = kpts0[:,:2]/kpts0[:,2]
-#         kpts1 = kpts1[:,:2]/kpts1[:,2]
-#         ransac_thr = thresh /np.mean([363.87561385714594,341.13920749319])
-#     else:
-#         kpts0 = (kpts0 - K0[[0, 1], [2, 2]][None]) / K0[[0, 1], [0, 1]][None]
-#         kpts1 = (kpts1 - K1[[0, 1], [2, 2]][None]) / K1[[0, 1], [0, 1]][None]
-#         # normalize ransac threshold
-#         K0 = K0.cpu().numpy()
-#         K1 = K1.cpu().numpy()
-#         ransac_thr = thresh / np.mean([K0[0, 0], K1[1, 1], K0[0, 0], K1[1, 1]])
+def compute_homo_error(data):
+    
+    m_bids = data['m_bids'] #(M,)
+    m_iids = data['m_iids'] #(M,)
+    pts0 = data['mkpts0_f'] #(M,2)
+    pts1 = data['mkpts1_f'] #(M,2)
+    
+    gt_pts1 = data['spv_w_pt0_i'][m_bids, m_iids] #(M,2)
+    err = torch.norm(gt_pts1-pts1, dim=-1) #(M,)
+
+    point_errs = []
+    inlier_homo_ = []
+    mean_dist_ = []
+
+    for bs in range(data['bs']):
+        mask = m_bids == bs
+        point_errs.append(err[mask].cpu().numpy())
+        _,inlier_homo,mean_dist = \
+            homo_estimate_error(pts0[mask].cpu().numpy(),pts1[mask].cpu().numpy(), data['mat'][bs].cpu().numpy(), shape = data['hw0_i'])
+        inlier_homo_.append(inlier_homo)
+        mean_dist_.append(mean_dist)
+
+            
+    # point_errs = torch.cat(point_errs, dim=0) #(M,)
+
+    data.update({'point_errs': point_errs,
+                 'inlier_homo': inlier_homo_,
+                 'mean_dist': mean_dist_})
+
+def homo_estimate_error(src_points, dst_points, real_H, ransac_threshold=3.0, shape=(480,640)):
+    # Convert points to the required format for OpenCV (Nx1x2)
+    if src_points.shape[0] <4:
+        print('\n can not estimate homography due to not enough point')
+        return None,np.array([]).astype(bool),np.inf
+    
+    src_points = np.expand_dims(src_points, axis=1)
+    dst_points = np.expand_dims(dst_points, axis=1)
+
+    # Compute homography using RANSAC algorithm
+    H, mask = cv2.findHomography(src_points, dst_points, cv2.RANSAC, ransac_threshold)
+
+    # Extract inlier points
+    inlier_homo = mask.ravel().astype(bool)
+
+    if H is None:
+        print('\n can not estimate homography due to too many outliers')
+        return None,np.array([]).astype(bool),np.inf
+    else:
+        corners = np.array([[0, 0, 1],
+                            [0, shape[0] - 1, 1],
+                            [shape[1] - 1, 0, 1],
+                            [shape[1] - 1, shape[0] - 1, 1]])
+
+        real_warped_corners = np.dot(corners, np.transpose(real_H))
+        real_warped_corners = real_warped_corners[:, :2] / real_warped_corners[:, 2:]
+        #print("real_warped_corners: ", real_warped_corners)
+        
+        warped_corners = np.dot(corners, np.transpose(H))
+        warped_corners = warped_corners[:, :2] / warped_corners[:, 2:]
+        #print("warped_corners: ", warped_corners)
+        
+        mean_dist = np.mean(np.linalg.norm(real_warped_corners - warped_corners, axis=1))
+        # correctness = float(mean_dist <= correctness_thresh)
+
+    return H,inlier_homo,mean_dist
 
 def estimate_pose(kpts0, kpts1, K0, K1, thresh, conf=0.99999, omni=False):
     if len(kpts0) < 5:
         return None
     # normalize keypoints
-    kpts0 = (kpts0 - K0[[0, 1], [2, 2]][None]) / K0[[0, 1], [0, 1]][None]
-    kpts1 = (kpts1 - K1[[0, 1], [2, 2]][None]) / K1[[0, 1], [0, 1]][None]
+    if omni:
+        intrinsics = {'xc': 322.629748325705,
+            'yc': 242.315857619958,
+            'ss': [341.802697729524,0.,-0.00183198083674977,3.17181248781474e-06,-1.36076040513106e-08],
+            'c': 1.06667265893937,
+            'd': 0.00666183008889951,
+            'e': -0.00631154881014278}
+        kpts0 = cam2world(kpts0.transpose(), intrinsics).transpose() 
+        kpts1 = cam2world(kpts1.transpose(), intrinsics).transpose()
+        kpts0 = kpts0/kpts0[:,[2]]
+        kpts1 = kpts1/kpts1[:,[2]]
+        kpts0 = kpts0[:,:2].astype(np.float32)
+        kpts1 = kpts1[:,:2].astype(np.float32)
+    else:
+        kpts0 = (kpts0 - K0[[0, 1], [2, 2]][None]) / K0[[0, 1], [0, 1]][None]
+        kpts1 = (kpts1 - K1[[0, 1], [2, 2]][None]) / K1[[0, 1], [0, 1]][None]
 
     # normalize ransac threshold
     ransac_thr = thresh / np.mean([K0[0, 0], K1[1, 1], K0[0, 0], K1[1, 1]])
@@ -139,7 +210,7 @@ def compute_pose_errors(data, config):
     """
     pixel_thr = config.TRAINER.RANSAC_PIXEL_THR  # 0.5
     conf = config.TRAINER.RANSAC_CONF  # 0.99999
-    data.update({'R_errs': [], 't_errs': [], 'inliers': []})
+    data.update({'R_errs': [], 't_errs': [], 'inlier_pose': []})
 
     m_bids = data['m_bids'].cpu().numpy()
     pts0 = data['mkpts0_f'].cpu().numpy()
@@ -147,22 +218,22 @@ def compute_pose_errors(data, config):
     K0 = data['K0'].cpu().numpy()
     K1 = data['K1'].cpu().numpy()
     T_0to1 = data['T_0to1'].cpu().numpy()
+    omni = True if data['dataset_name'][0] == 'C3VD' else False
 
-#ret = estimate_pose(pts0[mask], pts1[mask], data['K0'], data['K1'], pixel_thr, conf=conf, omni=True)
     for bs in range(K0.shape[0]):
         mask = m_bids == bs
-        ret = estimate_pose(pts0[mask], pts1[mask], K0[bs], K1[bs], pixel_thr, conf=conf)
+        ret = estimate_pose(pts0[mask], pts1[mask], K0[bs], K1[bs], pixel_thr, conf=conf, omni=omni)
 
         if ret is None:
             data['R_errs'].append(np.inf)
             data['t_errs'].append(np.inf)
-            data['inliers'].append(np.array([]).astype(bool))
+            data['inlier_pose'].append(np.array([]).astype(bool))
         else:
             R, t, inliers = ret
             t_err, R_err = relative_pose_error(T_0to1[bs], R, t, ignore_gt_t_thr=0.0)
             data['R_errs'].append(R_err)
             data['t_errs'].append(t_err)
-            data['inliers'].append(inliers)
+            data['inlier_pose'].append(inliers)
 
 
 # --- METRIC AGGREGATION ---
@@ -222,3 +293,13 @@ def aggregate_metrics(metrics, epi_err_thr=5e-4):
     precs = epidist_prec(np.array(metrics['epi_errs'], dtype=object)[unq_ids], dist_thresholds, True)  # (prec@err_thr)
 
     return {**aucs, **precs}
+
+def aggregate_homo_estimation_metric(metrics: list):
+
+    thr = [3, 5, 10]
+    auc = {}
+    for t in thr:
+        correct = np.array(metrics) < t
+        auc[f'homo@{t}'] = np.mean(correct)
+    
+    return auc

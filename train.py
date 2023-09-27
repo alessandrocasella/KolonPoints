@@ -59,8 +59,6 @@ def parse_args():
 
 def main():
     # parse arguments
-    os.environ['MPLCONFIGDIR'] = "temp"
-
     args = parse_args()
     rank_zero_only(pprint.pprint)(vars(args))
 
@@ -68,7 +66,7 @@ def main():
     config = get_cfg_defaults()
     config.merge_from_file(args.main_cfg_path)
     config.merge_from_file(args.data_cfg_path)
-    pl.seed_everything(config.TRAINER.SEED)  # reproducibility
+    pl.seed_everything(config.TRAINER.SEED,workers=True)  # reproducibility
     # TODO: Use different seeds for each dataloader workers
     # This is needed for data augmentation
     
@@ -99,13 +97,21 @@ def main():
     
     # Callbacks
     # TODO: update ModelCheckpoint to monitor multiple metrics
-    ckpt_callback = ModelCheckpoint(monitor='auc@10', verbose=True, save_top_k=5, mode='max',
+    if config.DATASET.HOMO.VAL:
+        monitor  = 'homo@5'
+        filename = '{epoch}-{homo@3:.3f}-{homo@5:.3f}-{homo@10:.3f}'
+    else:
+        monitor  = 'auc@10'
+        filename = '{epoch}-{auc@5:.3f}-{auc@10:.3f}-{auc@20:.3f}'
+    
+    ckpt_callback = ModelCheckpoint(monitor=monitor, verbose=True, save_top_k=5, mode='max',
                                     save_last=True,
                                     dirpath=str(ckpt_dir),
-                                    filename='{epoch}-{auc@5:.3f}-{auc@10:.3f}-{auc@20:.3f}')
+                                    filename=filename)
     lr_monitor = LearningRateMonitor(logging_interval='step')
     
-    earlystopping = EarlyStopping(monitor='auc@10', min_delta=0.005, patience=10, mode='max')
+
+    earlystopping = EarlyStopping(monitor=monitor, min_delta=0.005, patience=10, mode='max')
     
     callbacks = [lr_monitor,earlystopping]
     

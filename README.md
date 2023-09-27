@@ -3,13 +3,16 @@
 This is a project base on the implementation of [LOFTR]([zju3dv/LoFTR: Code for "LoFTR: Detector-Free Local Feature Matching with Transformers", CVPR 2021 (github.com)](https://github.com/zju3dv/LoFTR))
 
 
-
 To Do
 
-- [ ] Create image pairs based on overlap score (Currently image pairs are created based on frames sequence, choosing frames from the next 10 to 25.)
 - [ ] Include SuperPoint + SuperGlue
-- [x] Complete unsupervised LOFTR for Scannet
-- [ ] Try different model for fisheye 
+- [ ] Upgrade the code with up to date pytorch version
+
+Finished features
+
+- [X] Testing for LOFTR, SuperPoint, SuperGlue
+- [X] Visualization for point tracking
+- [X] Training with pinhole or omnidirectional camera model
 
 ## Environment Setting
 docker image: [junchongh97/loftr:2.0.0]([Image Layer Details - junchongh97/loftr:2.0.0 | Docker Hub](https://hub.docker.com/layers/junchongh97/loftr/2.0.0/images/sha256-813f4eb2dddd00656494b9c9f3f19008630aa0d4f07b3cb9b4d5dc7e2f01b833?context=repo))

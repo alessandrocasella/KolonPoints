@@ -2,6 +2,7 @@ from math import log
 from loguru import logger
 
 import torch
+import numpy as np
 from einops import repeat
 from kornia.utils import create_meshgrid
 
@@ -16,15 +17,6 @@ def mask_pts_at_padded_regions(grid_pt, mask):
     mask = repeat(mask, 'n h w -> n (h w) c', c=2)
     grid_pt[~mask.bool()] = 0
     return grid_pt
-
-@torch.no_grad()
-def mask_pts_at_masked_regions(grid_pt, mask):
-    """For megadepth dataset, zero-padding exists in images"""
-    # mask = repeat(mask, 'n h w -> n (h w) c', c=2)
-    mask_indices = mask[torch.arange(mask.shape[0])[:,None], grid_pt.long()[...,1],grid_pt.long()[...,0]]
-    grid_pt[~mask_indices.bool()] = 0
-    return grid_pt
-
 
 @torch.no_grad()
 def spvs_coarse(data, config):
@@ -64,8 +56,8 @@ def spvs_coarse(data, config):
         grid_pt0_i = mask_pts_at_padded_regions(grid_pt0_i, data['mask0'])
         grid_pt1_i = mask_pts_at_padded_regions(grid_pt1_i, data['mask1'])
     if 'mask0_spv' in data:
-        grid_pt0_i = mask_pts_at_masked_regions(grid_pt0_i, data['mask0_spv'])
-        grid_pt1_i = mask_pts_at_masked_regions(grid_pt1_i, data['mask1_spv'])
+        grid_pt0_i = mask_pts_at_padded_regions(grid_pt0_i, data['mask0_spv'])
+        # grid_pt1_i = mask_pts_at_padded_regions(grid_pt1_i, data['mask1_spv'])
     # warp kpts bi-directionally and resize them to coarse-level resolution
     # (no depth consistency check, since it leads to worse results experimentally)
     # (unhandled edge case: points with 0-depth will be warped to the left-up corner)
@@ -104,14 +96,24 @@ def spvs_coarse(data, config):
 
         conf_matrix_gt[b_ids, i_ids, j_ids] = 1
     else:
+        if 'superpoint_spv' in data:
+            # print(torch.mean(data['superpoint_spv'], dim=(1, 2)))
+            mask = repeat(data['superpoint_spv']>0.0001, 'n h w -> n (h w) c', c=2)
+            grid_pt0_i[~mask.bool()] = 0
+
+            # padded_arrays = [np.pad(array, ((0, h0*w0 - array.shape[0]), (0, 0)), mode='constant') for array in data['superpoint_spv']]
+            # grid_pt0_i = np.stack(padded_arrays)
+            # grid_pt0_i = torch.tensor(grid_pt0_i, dtype=torch.float32, device=device)
+        
         w_pt0_i = (data['mat'] @ torch.cat((grid_pt0_i.transpose(1,2), torch.ones((grid_pt0_i.shape[0],1, grid_pt0_i.shape[1]), device=device)), dim=1)).transpose(1,2)  # (N,hw,3)
         w_pt0_i = w_pt0_i[..., :2] / w_pt0_i[..., [2]] #(N,hw,2)
 
         def out_bound_mask(pt, w, h):
             return (pt[..., 0] < 0) + (pt[..., 0] >= w) + (pt[..., 1] < 0) + (pt[..., 1] >= h)
 
-        if 'mask1_spv' in data:
-            w_pt0_i = mask_pts_at_masked_regions(w_pt0_i, data['mask1_spv'])
+        # #to supervise on the edge
+        # if 'mask1_spv' in data:
+        #     w_pt0_i = mask_pts_at_padded_regions(w_pt0_i, data['mask1_spv'])
         
         w_pt0_c = w_pt0_i / scale1
 
@@ -125,11 +127,7 @@ def spvs_coarse(data, config):
         # 4. construct a gt conf_matrix
         conf_matrix_gt = torch.zeros(N, h0*w0, h1*w1, device=device)
         b_ids, i_ids = torch.where(nearest_index1 != 0)
-        j_ids = nearest_index1[b_ids, i_ids]
-        # dis = torch.norm(w_pt0_i[b_ids, i_ids]-grid_pt1_i[b_ids, j_ids], dim=-1)
-        # accept_idx = torch.where(dis<=scale1)
-        # b_ids, i_ids, j_ids = b_ids[accept_idx], i_ids[accept_idx], j_ids[accept_idx]
-    
+        j_ids = nearest_index1[b_ids, i_ids]    
         conf_matrix_gt[b_ids, i_ids, j_ids] = 1
     
     data.update({'conf_matrix_gt': conf_matrix_gt})
@@ -158,7 +156,7 @@ def spvs_coarse(data, config):
 def compute_supervision_coarse(data, config):
     assert len(set(data['dataset_name'])) == 1, "Do not support mixed datasets training!"
     data_source = data['dataset_name'][0]
-    if data_source.lower() in ['scannet', 'megadepth', 'c3vd']:
+    if data_source.lower() in ['scannet', 'megadepth', 'c3vd', 'c3vd_undistort']:
         spvs_coarse(data, config)
     else:
         raise ValueError(f'Unknown data source: {data_source}')
@@ -192,7 +190,7 @@ def spvs_fine(data, config):
 
 def compute_supervision_fine(data, config):
     data_source = data['dataset_name'][0]
-    if data_source.lower() in ['scannet', 'megadepth', 'c3vd']:
+    if data_source.lower() in ['scannet', 'megadepth', 'c3vd', 'c3vd_undistort']:
         spvs_fine(data, config)
     else:
         raise NotImplementedError

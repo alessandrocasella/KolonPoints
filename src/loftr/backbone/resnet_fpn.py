@@ -164,6 +164,14 @@ class ResNetFPN_16_4(nn.Module):
             conv3x3(block_dims[2], block_dims[1]),
         )
 
+        self.layer1_outconv = conv1x1(block_dims[0], block_dims[1])
+        self.layer1_outconv2 = nn.Sequential(
+            conv3x3(block_dims[1], block_dims[1]),
+            nn.BatchNorm2d(block_dims[1]),
+            nn.LeakyReLU(),
+            conv3x3(block_dims[1], block_dims[0]),
+        )
+
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
@@ -198,7 +206,11 @@ class ResNetFPN_16_4(nn.Module):
         x2_out = self.layer2_outconv(x2)
         x2_out = self.layer2_outconv2(x2_out+x3_out_2x)
 
-        return [x4_out, x2_out]
+        x2_out_2x = F.interpolate(x2_out, scale_factor=2., mode='bilinear', align_corners=True)
+        x1_out = self.layer1_outconv(x1)
+        x1_out = self.layer1_outconv2(x1_out+x2_out_2x)
+
+        return [x4_out, x1_out]
 
 class ResNetFPN_8_2_cross(nn.Module):
     """

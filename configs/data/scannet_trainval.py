@@ -1,9 +1,9 @@
 from configs.data.base import cfg
 
 
-TRAIN_BASE_PATH = "/workspace/dataset/scannet_indices"
+TRAIN_BASE_PATH = "/home/jhuang/dataset/scannet_indices"
 cfg.DATASET.TRAINVAL_DATA_SOURCE = "ScanNet"
-cfg.DATASET.TRAIN_DATA_ROOT = "/workspace/dataset/scannet/train"
+cfg.DATASET.TRAIN_DATA_ROOT = "/home/jhuang/dataset/scannet/train"
 cfg.DATASET.TRAIN_NPZ_ROOT = f"{TRAIN_BASE_PATH}/scene_data/train"
 cfg.DATASET.TRAIN_LIST_PATH = f"{TRAIN_BASE_PATH}/scene_data/train_list/scannet_small.txt"
 cfg.DATASET.TRAIN_INTRINSIC_PATH = f"{TRAIN_BASE_PATH}/intrinsics.npz"
@@ -16,9 +16,9 @@ cfg.DATASET.TRAIN_INTRINSIC_PATH = f"{TRAIN_BASE_PATH}/intrinsics.npz"
 # cfg.DATASET.VAL_INTRINSIC_PATH = cfg.DATASET.TEST_INTRINSIC_PATH = f"{TEST_BASE_PATH}/intrinsics.npz"
 # cfg.DATASET.MIN_OVERLAP_SCORE_TEST = 0.0   # for both test and val
 
-TEST_BASE_PATH = "/workspace/dataset/scannet_indices"
+TEST_BASE_PATH = "/home/jhuang/dataset/scannet_indices"
 cfg.DATASET.TEST_DATA_SOURCE = "ScanNet"
-cfg.DATASET.VAL_DATA_ROOT = cfg.DATASET.TEST_DATA_ROOT = "/workspace/dataset/scannet/train"
+cfg.DATASET.VAL_DATA_ROOT = cfg.DATASET.TEST_DATA_ROOT = "/home/jhuang//dataset/scannet/train"
 cfg.DATASET.VAL_NPZ_ROOT = cfg.DATASET.TEST_NPZ_ROOT = f"{TEST_BASE_PATH}/scene_data/val"
 cfg.DATASET.VAL_LIST_PATH = cfg.DATASET.TEST_LIST_PATH = f"{TEST_BASE_PATH}/scene_data/train_list/scannet_small.txt"
 cfg.DATASET.VAL_INTRINSIC_PATH = cfg.DATASET.TEST_INTRINSIC_PATH = f"{TEST_BASE_PATH}/intrinsics.npz"

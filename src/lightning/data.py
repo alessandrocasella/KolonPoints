@@ -26,6 +26,7 @@ from src.utils import comm
 from src.datasets.megadepth import MegaDepthDataset
 from src.datasets.scannet import ScanNetDataset
 from src.datasets.c3vd import C3VDDataset
+from src.datasets.c3vd_undistort import C3VD_UNDISTORT_Dataset
 from src.datasets.sampler import RandomConcatSampler
 from src.utils.misc import lower_config
 
@@ -161,7 +162,9 @@ class MultiSceneDataModule(pl.LightningDataModule):
                     mode='val',
                     min_overlap_score=self.min_overlap_score_test,
                     pose_dir=self.val_pose_root,
-                    cross_modal = self.cross_modal)
+                    cross_modal = self.cross_modal,
+                    homo = self.homo['val'],
+                    homo_param = self.homo)
             logger.info(f'[rank:{self.rank}] Train & Val Dataset loaded!')
         else:  # stage == 'test
             self.test_dataset = self._setup_dataset(
@@ -172,7 +175,9 @@ class MultiSceneDataModule(pl.LightningDataModule):
                 mode='test',
                 min_overlap_score=self.min_overlap_score_test,
                 pose_dir=self.test_pose_root,
-                cross_modal = self.cross_modal)
+                cross_modal = self.cross_modal,
+                homo = self.homo['val'],
+                homo_param = self.homo)
             logger.info(f'[rank:{self.rank}]: Test Dataset loaded!')
 
     def _setup_dataset(self,
@@ -240,6 +245,19 @@ class MultiSceneDataModule(pl.LightningDataModule):
             elif data_source == 'C3VD':
                 datasets.append(
                     C3VDDataset(data_root,
+                                   npz_path,
+                                   intrinsic_path,
+                                   mode=mode,
+                                   min_overlap_score=min_overlap_score,
+                                   augment_fn=augment_fn,
+                                   pose_dir=pose_dir,
+                                   cross_modal=cross_modal,
+                                   coarse_scale=self.coarse_scale,
+                                   homo = homo,
+                                   homo_param = homo_param))
+            elif data_source == 'C3VD_undistort':
+                datasets.append(
+                    C3VD_UNDISTORT_Dataset(data_root,
                                    npz_path,
                                    intrinsic_path,
                                    mode=mode,
@@ -320,13 +338,20 @@ class MultiSceneDataModule(pl.LightningDataModule):
         assert self.data_sampler in ['scene_balance']
         logger.info(f'[rank:{self.rank}/{self.world_size}]: Train Sampler and DataLoader re-init (should not re-init between epochs!).')
         if self.data_sampler == 'scene_balance':
+            # if not self.homo['train']:
             sampler = RandomConcatSampler(self.train_dataset,
-                                          self.n_samples_per_subset,
-                                          self.subset_replacement,
-                                          self.shuffle, self.repeat, self.seed)
+                                            self.n_samples_per_subset,
+                                            self.subset_replacement,
+                                            self.shuffle, self.repeat, self.seed)
+            # else:
+            #     sampler = DistributedSampler(self.train_dataset, shuffle=True)
         else:
             sampler = None
         dataloader = DataLoader(self.train_dataset, sampler=sampler, **self.train_loader_params)
+
+        self.step_per_epoch = len(dataloader)
+        logger.info(f'{self.step_per_epoch} steps per epoch')
+        # self.config.TRAINER.WARMUP_STEP = 3*self.step_per_epoch
         
         return dataloader
     

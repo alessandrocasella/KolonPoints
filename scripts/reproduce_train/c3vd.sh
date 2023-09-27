@@ -29,4 +29,5 @@ python -u ./train.py \
     --limit_val_batches=1. \
     --num_sanity_val_steps=10 \
     --benchmark=True \
-    --max_epochs=40
+    --max_epochs=70 \
+    # --ckpt_path "logs/tb_logs/c3vd-ds-bs=2_loftr/version_3/checkpoints/epoch=7-auc@5=0.085-auc@10=0.176-auc@20=0.262.ckpt"

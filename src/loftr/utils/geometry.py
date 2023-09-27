@@ -169,12 +169,12 @@ def omni_warp_kpts(kpts0, depth0, depth1, T_0to1, K0, K1):
 #     return result
 
 def cam2world(m, ocam_model):
-    ss = ocam_model['ss'][0]
-    xc = ocam_model['xc'][0]
-    yc = ocam_model['yc'][0]
-    c = ocam_model['c'][0]
-    d = ocam_model['d'][0]
-    e = ocam_model['e'][0]
+    ss = ocam_model['ss']
+    xc = ocam_model['xc']
+    yc = ocam_model['yc']
+    c = ocam_model['c']
+    d = ocam_model['d']
+    e = ocam_model['e']
 
     A = np.array([[c, d], [e, 1]])
     T = np.array([[xc], [yc]])

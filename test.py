@@ -23,6 +23,8 @@ def parse_args():
     parser.add_argument(
         '--dump_dir', type=str, default=None, help="if set, the matching results will be dump to dump_dir")
     parser.add_argument(
+        '--dump_img_dir', type=str, default=None, help="if set, the matching images will be dump to dump_dir")
+    parser.add_argument(
         '--profiler_name', type=str, default=None, help='options: [inference, pytorch], or leave it unset')
     parser.add_argument(
         '--batch_size', type=int, default=1, help='batch_size per gpu')
@@ -54,7 +56,7 @@ if __name__ == '__main__':
 
     # lightning module
     profiler = build_profiler(args.profiler_name)
-    model = PL_LoFTR(config, pretrained_ckpt=args.ckpt_path, profiler=profiler, dump_dir=args.dump_dir)
+    model = PL_LoFTR(config, pretrained_ckpt=args.ckpt_path, profiler=profiler, dump_dir=args.dump_dir, dump_img_dir=args.dump_img_dir)
     loguru_logger.info(f"LoFTR-lightning initialized!")
 
     # lightning data

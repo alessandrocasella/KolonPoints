@@ -95,11 +95,11 @@ class LoFTRLoss(nn.Module):
         else:
             raise ValueError('Unknown coarse loss: {type}'.format(type=self.loss_config['coarse_type']))
         
-    def compute_fine_loss(self, expec_f, expec_f_gt):
+    def compute_fine_loss(self, expec_f, expec_f_gt, gt_mask):
         if self.fine_type == 'l2_with_std':
-            return self._compute_fine_loss_l2_std(expec_f, expec_f_gt)
+            return self._compute_fine_loss_l2_std(expec_f, expec_f_gt, gt_mask)
         elif self.fine_type == 'l2':
-            return self._compute_fine_loss_l2(expec_f, expec_f_gt)
+            return self._compute_fine_loss_l2(expec_f, expec_f_gt, gt_mask)
         else:
             raise NotImplementedError()
 
@@ -119,7 +119,7 @@ class LoFTRLoss(nn.Module):
         offset_l2 = ((expec_f_gt[correct_mask] - expec_f[correct_mask]) ** 2).sum(-1)
         return offset_l2.mean()
 
-    def _compute_fine_loss_l2_std(self, expec_f, expec_f_gt):
+    def _compute_fine_loss_l2_std(self, expec_f, expec_f_gt, gt_mask):
         """
         Args:
             expec_f (torch.Tensor): [M, 3] <x, y, std>
@@ -132,6 +132,11 @@ class LoFTRLoss(nn.Module):
         std = expec_f[:, 2]
         inverse_std = 1. / torch.clamp(std, min=1e-10)
         weight = (inverse_std / torch.mean(inverse_std)).detach()  # avoid minizing loss through increase std
+        
+        # #train less on the gt point
+        # gt_weight = torch.ones(gt_mask.shape, device=expec_f.device)
+        # gt_weight[gt_mask]=0.01
+        # weight = weight*gt_weight
 
         # corner case: no correct coarse match found
         if not correct_mask.any():
@@ -180,7 +185,7 @@ class LoFTRLoss(nn.Module):
         loss_scalars.update({"loss_c": loss_c.clone().detach().cpu()})
 
         # 2. fine-level loss
-        loss_f = self.compute_fine_loss(data['expec_f'], data['expec_f_gt'])
+        loss_f = self.compute_fine_loss(data['expec_f'], data['expec_f_gt'], data['gt_mask'])
         if loss_f is not None:
             loss += loss_f * self.loss_config['fine_weight']
             loss_scalars.update({"loss_f":  loss_f.clone().detach().cpu()})

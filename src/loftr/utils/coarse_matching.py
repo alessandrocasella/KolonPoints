@@ -255,7 +255,9 @@ class CoarseMatching(nn.Module):
             'm_bids': b_ids[mconf != 0],  # mconf == 0 => gt matches
             'mkpts0_c': mkpts0_c[mconf != 0],
             'mkpts1_c': mkpts1_c[mconf != 0],
-            'mconf': mconf[mconf != 0]
+            'mconf': mconf[mconf != 0],
+            'm_iids': i_ids[mconf !=0],
+            'm_jids': j_ids[mconf !=0]
         })
 
         return coarse_matches
