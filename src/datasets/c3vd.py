@@ -154,7 +154,7 @@ class C3VDDataset(utils.data.Dataset):
 
             return data
         else:
-            np.random.seed(torch.randint(100,(1,))+idx)
+            seed = torch.randint(500,(1,))+idx
             # read the grayscale image which will be resized to (1, 480, 640)
             img_name0 = osp.join(self.root_dir, scene_name, f'{stem_name_0}_color.png')
             
@@ -162,8 +162,9 @@ class C3VDDataset(utils.data.Dataset):
             image0, mask0 = read_c3vd_gray(img_name0, resize=(640, 480), augment_fn=None, with_mask=True, return_np = True)
                                     #    augment_fn=np.random.choice([self.augment_fn, None], p=[0.5, 0.5]))
             depth0 = read_c3vd_depth_mask(osp.join(self.root_dir, scene_name, f'{stem_name_0}_depth.tiff'))
-            # mask0 = np.logical_and(mask0, depth0).astype(np.uint8) * 255
-            mask0 = mask0.astype(np.uint8) * 255
+            mask0 = np.logical_and(mask0, depth0).astype(np.uint8) * 255
+
+            # mask0 = mask0.astype(np.uint8) * 255
             mat = sample_homography_np(np.array(image0.shape),
                                     shift=0, perspective=True, scaling=True, rotation=True, translation=True,
                                     n_scales=5, n_angles=25, scaling_amplitude=self.homo_param["scale"],
@@ -172,7 +173,8 @@ class C3VDDataset(utils.data.Dataset):
                                     patch_ratio=self.homo_param["patch_ratio"],
                                     max_angle=self.homo_param["rotation"],
                                     allow_artifacts=False,
-                                    translation_overflow=0.
+                                    translation_overflow=0.,
+                                    seed=seed
                                     )
             mat = np.linalg.inv(mat)
             image1 = cv2.warpPerspective(image0, mat, (image0.shape[1], image0.shape[0]))

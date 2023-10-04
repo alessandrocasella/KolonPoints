@@ -338,7 +338,7 @@ def sample_homography_np(
         shape, shift=0, perspective=True, scaling=True, rotation=True, translation=True,
         n_scales=5, n_angles=25, scaling_amplitude=0.1, perspective_amplitude_x=0.1,
         perspective_amplitude_y=0.1, patch_ratio=0.5, max_angle=pi/2,
-        allow_artifacts=False, translation_overflow=0.):
+        allow_artifacts=False, translation_overflow=0.,seed=0):
     """Sample a random valid homography.
 
     Computes the homography transformation between a random patch in the original image
@@ -370,7 +370,7 @@ def sample_homography_np(
 
     # print("debugging")
 
-
+    np.random.seed(seed=seed)
     # Corners of the output image
     pts1 = np.stack([[0., 0.], [0., 1.], [1., 1.], [1., 0.]], axis=0)
     # Corners of the input patch

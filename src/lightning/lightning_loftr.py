@@ -207,7 +207,7 @@ class PL_LoFTR(pl.LightningModule):
         self._train_inference(batch)
 
         # logging
-        if self.trainer.global_rank == 0 and self.global_step % int(0.25*self.trainer.num_training_batches) == 0:
+        if self.trainer.global_rank == 0 and self.global_step % int(0.25*self.trainer.num_training_batches) == 0: #int(0.25*self.trainer.num_training_batches) self.trainer.log_every_n_steps
             # scalars
             for k, v in batch['loss_scalars'].items():
                 self.logger.experiment.add_scalar(f'train/{k}', v, self.global_step)
@@ -230,7 +230,6 @@ class PL_LoFTR(pl.LightningModule):
                     pairs = pair_figures[k]
                     out_pair = [np.concatenate([pairs[idx],v[idx]], axis=0) for idx in range(len(v))]
                     self.logger.experiment.add_images(f'train_all_match/{k}', np.concatenate(out_pair, axis=1), self.global_step, dataformats='HWC')
-
 
                 figures = make_supervision_figures(batch)
                 for k, v in figures.items():

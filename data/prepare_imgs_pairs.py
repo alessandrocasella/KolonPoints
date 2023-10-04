@@ -51,7 +51,7 @@ print(f"{scene_id} has total num of ids: {total_num}")
 
 #train.npz
 for i in range(total_num+1):
-    next = random.randint(10,25)
+    next = random.randint(20,50)
     if (i+next)>total_num:
         continue
     name.append([scene, str(i).zfill(4), str(i+next).zfill(4)])
@@ -60,6 +60,7 @@ random.shuffle(name)
 np.savez(f"{output_path}/train/{args.scene_id}.npz", name = name, score = score)
 
 #val.npz
+# resample the sequence by 10 frames and choose num_choices pair
 name = [] 
 score = [] 
 values = list(range(0, total_num + 1, 10))
@@ -69,9 +70,10 @@ if len(values)<num_choices:
 random_choices = random.sample(values, num_choices)
 
 for i in random_choices:
-    next = random.randint(5,50)
+    next = random.randint(20,50)
     if (i+next)>total_num:
-        next = total_num-i
+        name.append([scene, str(total_num-next).zfill(4), str(total_num).zfill(4)])
+        continue
     name.append([scene, str(i).zfill(4), str(i+next).zfill(4)])
     score.append(1.)
 random.shuffle(name)

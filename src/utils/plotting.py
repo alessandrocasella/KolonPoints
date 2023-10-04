@@ -168,7 +168,7 @@ def _make_evaluation_figure(data, b_id, error_type = 'epi', alpha='dynamic'):
                                   color, text=text)
     
     if error_type == 'epi':
-        mask = correct_mask
+        mask = data['inlier_pose'][b_id]
 
     elif error_type == 'homo':
         mask = data['inlier_homo'][b_id]

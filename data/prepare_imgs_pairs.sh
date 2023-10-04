@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+#usage bash prepare_imgs_pairs.sh c3vd/ c3vd_indices/
 SCRIPTPATH=$(dirname $(readlink -f "$0"))
 DATA_DIR="${SCRIPTPATH}"
 

@@ -170,14 +170,14 @@ class C3VD_UNDISTORT_Dataset(utils.data.Dataset):
                             f'{scene_name}_{stem_name_1}'),
             }
 
-            # for LoFTR training
-            if mask0 is not None:  # img_padding is True
-                if self.coarse_scale:
-                    [ts_mask_0, ts_mask_1] = F.interpolate(torch.stack([mask0, mask1], dim=0)[None].float(),
-                                                        scale_factor=self.coarse_scale,
-                                                        mode='nearest',
-                                                        recompute_scale_factor=False)[0].bool()
-                # data.update({'mask0': ts_mask_0, 'mask1': ts_mask_1})
-                data.update({'mask0_spv': ts_mask_0, 'mask1_spv': ts_mask_1})
+            # # for LoFTR training
+            # if mask0 is not None:  # img_padding is True
+            #     if self.coarse_scale:
+            #         [ts_mask_0, ts_mask_1] = F.interpolate(torch.stack([mask0, mask1], dim=0)[None].float(),
+            #                                             scale_factor=self.coarse_scale,
+            #                                             mode='nearest',
+            #                                             recompute_scale_factor=False)[0].bool()
+            #     # data.update({'mask0': ts_mask_0, 'mask1': ts_mask_1})
+            #     data.update({'mask0_spv': ts_mask_0, 'mask1_spv': ts_mask_1})
 
             return data

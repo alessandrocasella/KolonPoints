@@ -1,5 +1,11 @@
 # KolonPoints
 
+## Tracking visualization
+
+The tracking visualization script is ready to be used by demo_track.sh, it will run the python script demo_track.py. It includes 3 models, superpoint, superglue and LOFTR. The input is always a consecutive two frames even for superpoint.
+
+
+
 This is a project base on the implementation of [LOFTR]([zju3dv/LoFTR: Code for "LoFTR: Detector-Free Local Feature Matching with Transformers", CVPR 2021 (github.com)](https://github.com/zju3dv/LoFTR))
 
 

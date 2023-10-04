@@ -52,10 +52,12 @@ import time
 
 import cv2
 import torch
+from pathlib import Path
 
 from src.config.default import get_cfg_defaults
 from src.utils.misc import lower_config
-from src.loftr import LoFTR, default_cfg
+from src.loftr import LoFTR, SuperPointFrontend, Matching, default_cfg
+from src.loftr.utils.geometry import cam2world
 
 # Stub to warn about opencv version.
 if int(cv2.__version__[0]) < 3: # pragma: no cover
@@ -154,12 +156,7 @@ class PointTracker(object):
     return offsets
 
   def update(self, pairs):
-    """ Add a new set of point and descriptor observations to the tracker.
 
-    Inputs
-      pts - 3xN numpy array of 2D point observations.
-      desc - DxN numpy array of corresponding D dimensional descriptors.
-    """
     if pairs is None:
       print('PointTracker: Warning, no points were added to tracker.')
       return
@@ -278,7 +275,7 @@ class PointTracker(object):
         pt2 = pts_mem[i+1][idx2,:2]
         p1 = (int(round(pt1[0])), int(round(pt1[1])))
         p2 = (int(round(pt2[0])), int(round(pt2[1])))
-        clr = myjet[int(np.clip(i+2, 0, 9)), :]*255
+        clr = myjet[int(np.clip(np.floor((i+1)/N*10), 0, 9)), :]*255
         cv2.line(out, p1, p2, clr, thickness=stroke, lineType=16)
         # Draw end points of each track.
         if i == N-2:
@@ -325,6 +322,7 @@ class VideoStreamer(object):
         search = os.path.join(basedir, img_glob)
         self.listing = glob.glob(search)
         self.listing.sort()
+        #self.listing = sorted(self.listing, key=lambda x: int(x.split('/')[-1].split('.')[0]))
         self.listing = self.listing[::self.skip]
         self.maxlen = len(self.listing)
         if self.maxlen == 0:
@@ -421,22 +419,49 @@ if __name__ == '__main__':
       help='Save output frames to a directory (default: False)')
   parser.add_argument('--write_dir', type=str, default='tracker_outputs/',
       help='Directory where to write output frames (default: tracker_outputs/).')
+  parser.add_argument('--model', type=str, choices=['LOFTR', 'SuperPoint', 'SuperGlue'],
+      help='Model to choose.')
+  parser.add_argument('--filter', action='store_true',
+      help='Filter the matching points with RANSAC in finding Essential matrix')
   parser.add_argument('--video_name', type=str,
       help='Name for the output video.')
   opt = parser.parse_args()
   print(opt)
 
-  _default_cfg = get_cfg_defaults()
-  _default_cfg['LOFTR']['COARSE']['TEMP_BUG_FIX'] = True  # set to False when using the old ckpt
-  _default_cfg['LOFTR']['MATCH_COARSE']['THR'] = 0.9
+  #reading the intrinsic for undistort C3VD for possible filtering by finding essential matrix
+  with open("data/undistortion/c3vd_calibration.txt", 'r') as f:
+    lines = f.readlines()
+
+  K = np.asarray(lines[0].split(), dtype=np.float32).reshape(3,3)
 
   # This class helps load input images from different sources.
   vs = VideoStreamer(opt.input, opt.camid, opt.H, opt.W, opt.skip, opt.img_glob)
 
   print('==> Loading pre-trained network.')
-  matcher = LoFTR(config=lower_config(_default_cfg['LOFTR']))
-  matcher.load_state_dict(torch.load(opt.weights_path)['state_dict'])
-  matcher = matcher.eval().cuda()
+  if opt.model == "LOFTR":
+    _default_cfg = get_cfg_defaults()
+    _default_cfg['LOFTR']['COARSE']['TEMP_BUG_FIX'] = True  # set to False when using the old ckpt
+    _default_cfg['LOFTR']['MATCH_COARSE']['THR'] = 0.5
+    matcher = LoFTR(config=lower_config(_default_cfg['LOFTR']))
+    matcher.load_state_dict(torch.load(opt.weights_path)['state_dict'])
+    matcher = matcher.eval().cuda()
+  elif opt.model == "SuperPoint":
+    superpoint = SuperPointFrontend(weights_path=opt.weights_path,
+      nms_dist=4, conf_thresh=0.005)
+  elif opt.model == "SuperGlue":
+    config = {
+    'superpoint': {
+        'nms_radius': 4, #opt.nms_radius,
+        'keypoint_threshold': 0.005, #opt.keypoint_threshold,
+        'max_keypoints': 1024, #opt.max_keypoints
+    },
+    'superglue': {
+        'weights': 'indoor',#opt.superglue,
+        'sinkhorn_iterations': 20, #opt.sinkhorn_iterations,
+        'match_threshold': 0.2 #opt.match_threshold,
+    }
+    }
+    matcher = Matching(config).eval().cuda()
   print('==> Successfully loaded pre-trained network.')
 
   # This class helps merge consecutive point matches into tracks.
@@ -455,55 +480,117 @@ if __name__ == '__main__':
       os.makedirs(opt.write_dir)
 
   print('==> Running Demo.')
-  while True:
+  try:
+    while True:
 
-    # Get a new image.
-    img0, img1, status = vs.next_frame()
-    if status is False:
-      break
+      # Get a new image.
+      img0, img1, status = vs.next_frame()
+      if status is False:
+        break
 
-    # Get points and descriptors.
-    batch = {'image0': torch.from_numpy(img0)[None][None].cuda(), 
-         'image1': torch.from_numpy(img1)[None][None].cuda(),
-         'dataset_name': ['C3VD_undistort']}
 
-    # Inference with LoFTR and get prediction
-    with torch.no_grad():
-        matcher(batch)
+      batch = {'image0': torch.from_numpy(img0)[None][None].cuda(), 
+          'image1': torch.from_numpy(img1)[None][None].cuda(),
+          'dataset_name': ['Scannet']}
+      # Get points and descriptors.
+      with torch.no_grad():
+        if opt.model == "LOFTR":
+          # Inference with LoFTR and get prediction
+          matcher(batch)
         # mkpts0 = batch['mkpts0_f'].cpu().numpy()
         # mkpts1 = batch['mkpts1_f'].cpu().numpy()
-        mkpts0 = batch['mkpts0_f'].cpu().numpy()
-        mkpts1 = batch['mkpts1_f'].cpu().numpy()
-        i_ids = batch['i_ids'].cpu().numpy()
-        j_ids = batch['j_ids'].cpu().numpy()
-        mconf = batch['mconf'].cpu().numpy()
+          mkpts0 = batch['mkpts0_f'].cpu().numpy()
+          mkpts1 = batch['mkpts1_f'].cpu().numpy()
+          i_ids = batch['i_ids'].cpu().numpy()
+          j_ids = batch['j_ids'].cpu().numpy()
+          mconf = batch['mconf'].cpu().numpy()
+        elif opt.model == "SuperPoint":
+          pts0, des0, _ = superpoint.run(batch['image0'])
+          pts1, des1, _ = superpoint.run(batch['image1'])
+          matches = superpoint.nn_match_two_way(des0,des1, nn_thresh=opt.nn_thresh)
+          mkpts0 = pts0[:2,matches[0].astype(int)].T
+          mkpts1 = pts1[:2,matches[1].astype(int)].T
+        elif opt.model == "SuperGlue":
+          pred = matcher({'image0': batch['image0'], 'image1': batch['image1']})
+          pred = {k: v[0].cpu().numpy() for k, v in pred.items()}
+          kpts0, kpts1 = pred['keypoints0'], pred['keypoints1']
+          matches, conf = pred['matches0'], pred['matching_scores0']
+          mkpts0 = kpts0[matches>-1]
+          mkpts1 = kpts1[matches[matches>-1]]
+      
+      #for distorted image, mask the point in the black region
+      darkness_threshold = 5
+      # Create a mask by thresholding the grayscale image
+      mask = np.where((img1*255.) < darkness_threshold, 0, 255).astype(np.uint8)
+      # Perform morphological closing to fill small holes in the mask
+      kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+      mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+      mask = cv2.GaussianBlur(mask, (13, 13), 0)
+      mask = mask ==255
+      valid0 = [mask[int(pt[1]),int(pt[0])] for pt in mkpts0]
+      valid1 = [mask[int(pt[1]),int(pt[0])] for pt in mkpts1]
+      valid = np.array(valid0) * np.array(valid1)
+      mkpts0 = mkpts0[valid]
+      mkpts1 = mkpts1[valid]
+      
+      #filter pts with find fundmental matrx
+      if opt.filter and len(mkpts0) >= 5:
+        # intrinsics = {'xc': 322.629748325705,
+        #   'yc': 242.315857619958,
+        #   'ss': [341.802697729524,0.,-0.00183198083674977,3.17181248781474e-06,-1.36076040513106e-08],
+        #   'c': 1.06667265893937,
+        #   'd': 0.00666183008889951,
+        #   'e': -0.00631154881014278}
+        # kpts0 = cam2world(mkpts0.transpose(), intrinsics).transpose() 
+        # kpts1 = cam2world(mkpts1.transpose(), intrinsics).transpose()
+        # kpts0 = kpts0/kpts0[:,[2]]
+        # kpts1 = kpts1/kpts1[:,[2]]
+        # kpts0 = kpts0[:,:2].astype(np.float32)
+        # kpts1 = kpts1[:,:2].astype(np.float32)
+        kpts0 = (mkpts0 - K[[0, 1], [2, 2]][None]) / K[[0, 1], [0, 1]][None]
+        kpts1 = (mkpts1 - K[[0, 1], [2, 2]][None]) / K[[0, 1], [0, 1]][None]
+        # normalize ransac threshold
+        ransac_thr = 0.5 / np.mean([K[0, 0], K[1, 1], K[0, 0], K[1, 1]])
 
-    if mkpts0.shape[0] == 0:
-      pairs = None
-    else:
-      pairs = {'pts0': mkpts0, 'pts1': mkpts1}
+        # compute pose with cv2
+        E, mask = cv2.findEssentialMat(
+            kpts0, kpts1, np.eye(3), threshold=ransac_thr, prob=0.99999, method=cv2.RANSAC)
+        if E is None:
+            print("\nE is None while trying to recover pose.\n")
+        else:
+          mkpts0 = mkpts0[mask.ravel() > 0]
+          mkpts1 = mkpts1[mask.ravel() > 0]
+      
+      if mkpts0.shape[0] == 0:
+        pairs = None
+      else:
+        pairs = {'pts0': mkpts0, 'pts1': mkpts1}
 
-    tracker.update(pairs)
+      tracker.update(pairs)
 
-    # Get tracks for points which were match successfully across all frames.
-    tracks = tracker.get_tracks(opt.min_length)
-    # print(matches)
-    # Primary output - Show point tracks overlayed on top of input image.
-    out1 = (np.dstack((img1, img1, img1)) * 255.).astype('uint8')
-    tracker.draw_tracks(out1, tracks)
+      # Get tracks for points which were match successfully across all frames.
+      tracks = tracker.get_tracks(opt.min_length)
+      # print(tracks)
+      # Primary output - Show point tracks overlayed on top of input image.
+      out1 = (np.dstack((img1, img1, img1)) * 255.).astype('uint8')
+      tracker.draw_tracks(out1, tracks)
 
-    out = cv2.resize(out1, (opt.display_scale*opt.W, opt.display_scale*opt.H))
+      out = cv2.resize(out1, (opt.display_scale*opt.W, opt.display_scale*opt.H))
 
-    # Optionally write images to disk.
-    if opt.write:
-      out_file = os.path.join(opt.write_dir, 'frame_%05d.png' % vs.i)
-      print('Writing image to %s' % out_file)
-      cv2.imwrite(out_file, out)
+      # Optionally write images to disk.
+      if opt.write:
+        out_file = os.path.join(opt.write_dir, 'frame_%05d.png' % vs.i)
+        print('Writing image to %s' % out_file)
+        cv2.imwrite(out_file, out)
+  
+  except KeyboardInterrupt:
+    print ("press ctrl + c")
+    pass
       
   #writing video
   
   # Define the output video file name and parameters
-  output_file = opt.video_name +'.avi'
+  output_file = str(Path(opt.write_dir).parent/(opt.video_name +'.avi'))
   frame_width = 640
   frame_height = 480
   frame_rate = 20.0

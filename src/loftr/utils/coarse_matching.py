@@ -195,45 +195,45 @@ class CoarseMatching(nn.Module):
         j_ids = all_j_ids[b_ids, i_ids]
         mconf = conf_matrix[b_ids, i_ids, j_ids]
 
-        # 4. Random sampling of training samples for fine-level LoFTR
-        # (optional) pad samples with gt coarse-level matches
-        if self.training:
-            # NOTE:
-            # The sampling is performed across all pairs in a batch without manually balancing
-            # #samples for fine-level increases w.r.t. batch_size
-            if 'mask0' not in data:
-                num_candidates_max = mask.size(0) * max(
-                    mask.size(1), mask.size(2))
-            else:
-                num_candidates_max = compute_max_candidates(
-                    data['mask0'], data['mask1'])
-            num_matches_train = int(num_candidates_max *
-                                    self.train_coarse_percent)
-            num_matches_pred = len(b_ids)
-            assert self.train_pad_num_gt_min < num_matches_train, "min-num-gt-pad should be less than num-train-matches"
+        # # 4. Random sampling of training samples for fine-level LoFTR
+        # # (optional) pad samples with gt coarse-level matches
+        # if self.training:
+        #     # NOTE:
+        #     # The sampling is performed across all pairs in a batch without manually balancing
+        #     # #samples for fine-level increases w.r.t. batch_size
+        #     if 'mask0' not in data:
+        #         num_candidates_max = mask.size(0) * max(
+        #             mask.size(1), mask.size(2))
+        #     else:
+        #         num_candidates_max = compute_max_candidates(
+        #             data['mask0'], data['mask1'])
+        #     num_matches_train = int(num_candidates_max *
+        #                             self.train_coarse_percent)
+        #     num_matches_pred = len(b_ids)
+        #     assert self.train_pad_num_gt_min < num_matches_train, "min-num-gt-pad should be less than num-train-matches"
 
-            # pred_indices is to select from prediction
-            if num_matches_pred <= num_matches_train - self.train_pad_num_gt_min:
-                pred_indices = torch.arange(num_matches_pred, device=_device)
-            else:
-                pred_indices = torch.randint(
-                    num_matches_pred,
-                    (num_matches_train - self.train_pad_num_gt_min, ),
-                    device=_device)
+        #     # pred_indices is to select from prediction
+        #     if num_matches_pred <= num_matches_train - self.train_pad_num_gt_min:
+        #         pred_indices = torch.arange(num_matches_pred, device=_device)
+        #     else:
+        #         pred_indices = torch.randint(
+        #             num_matches_pred,
+        #             (num_matches_train - self.train_pad_num_gt_min, ),
+        #             device=_device)
 
-            # gt_pad_indices is to select from gt padding. e.g. max(3787-4800, 200)
-            gt_pad_indices = torch.randint(
-                    len(data['spv_b_ids']),
-                    (max(num_matches_train - num_matches_pred,
-                        self.train_pad_num_gt_min), ),
-                    device=_device)
-            mconf_gt = torch.zeros(len(data['spv_b_ids']), device=_device)  # set conf of gt paddings to all zero
+        #     # gt_pad_indices is to select from gt padding. e.g. max(3787-4800, 200)
+        #     gt_pad_indices = torch.randint(
+        #             len(data['spv_b_ids']),
+        #             (max(num_matches_train - num_matches_pred,
+        #                 self.train_pad_num_gt_min), ),
+        #             device=_device)
+        #     mconf_gt = torch.zeros(len(data['spv_b_ids']), device=_device)  # set conf of gt paddings to all zero
 
-            b_ids, i_ids, j_ids, mconf = map(
-                lambda x, y: torch.cat([x[pred_indices], y[gt_pad_indices]],
-                                       dim=0),
-                *zip([b_ids, data['spv_b_ids']], [i_ids, data['spv_i_ids']],
-                     [j_ids, data['spv_j_ids']], [mconf, mconf_gt]))
+        #     b_ids, i_ids, j_ids, mconf = map(
+        #         lambda x, y: torch.cat([x[pred_indices], y[gt_pad_indices]],
+        #                                dim=0),
+        #         *zip([b_ids, data['spv_b_ids']], [i_ids, data['spv_i_ids']],
+        #              [j_ids, data['spv_j_ids']], [mconf, mconf_gt]))
 
         # These matches select patches that feed into fine-level network
         coarse_matches = {'b_ids': b_ids, 'i_ids': i_ids, 'j_ids': j_ids}
